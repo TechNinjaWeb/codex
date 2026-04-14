@@ -17,6 +17,7 @@ use reqwest::header::AUTHORIZATION;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
+use serde::Serialize;
 use serde_json::Value;
 use serial_test::serial;
 use std::process::Command;
@@ -104,6 +105,28 @@ async fn rest_rows(
         .await?
         .error_for_status()?;
     Ok(response.json::<Vec<Value>>().await?)
+}
+
+async fn rpc_json<T, P>(
+    client: &reqwest::Client,
+    base_url: &str,
+    service_role_key: &str,
+    name: &str,
+    payload: &P,
+) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+    P: Serialize + ?Sized,
+{
+    let url = format!("{}/rest/v1/rpc/{name}", base_url.trim_end_matches('/'));
+    let response = client
+        .post(url)
+        .headers(auth_headers(service_role_key))
+        .json(payload)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(response.json::<T>().await?)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -211,6 +234,10 @@ async fn live_open_brain_lcm_auto_compaction_writes_graph_artifacts() -> Result<
         .iter()
         .find(|row| row["node_kind"] == "summary_d0")
         .expect("expected at least one leaf summary node");
+    let summary_node_id = summary_node["node_id"]
+        .as_str()
+        .expect("summary node id")
+        .to_string();
     assert!(
         summary_node["metadata"]["span_id"].as_str().is_some(),
         "expected the leaf summary node to carry a compaction span id"
@@ -219,6 +246,10 @@ async fn live_open_brain_lcm_auto_compaction_writes_graph_artifacts() -> Result<
         .iter()
         .find(|row| row["node_kind"] == "context_packet")
         .expect("expected a context packet node");
+    let context_packet_node_id = context_packet["node_id"]
+        .as_str()
+        .expect("context packet node id")
+        .to_string();
     assert!(
         summary_node["metadata"]["span_id"] != context_packet["metadata"]["packet_id"],
         "compaction span id should not alias the context packet id"
@@ -234,6 +265,27 @@ async fn live_open_brain_lcm_auto_compaction_writes_graph_artifacts() -> Result<
     assert!(
         packet_item_count > 0,
         "context packet should contain at least one assembled packet item"
+    );
+    let edge_rows = rest_rows(
+        &client,
+        &supabase_url,
+        &service_role_key,
+        "ob_edges",
+        &[
+            (
+                "select",
+                "from_node_id,to_node_id,relationship_type,metadata".to_string(),
+            ),
+            ("from_node_id", format!("eq.{context_packet_node_id}")),
+        ],
+    )
+    .await?;
+    assert!(
+        edge_rows.iter().any(|row| {
+            row["relationship_type"] == "DERIVES_FROM"
+                && row["to_node_id"].as_str() == Some(summary_node_id.as_str())
+        }),
+        "expected the context packet to derive from the frontier summary node"
     );
     let span_id = summary_node["metadata"]["span_id"]
         .as_str()
@@ -264,6 +316,105 @@ async fn live_open_brain_lcm_auto_compaction_writes_graph_artifacts() -> Result<
     assert!(
         span["removed_message_count"].as_u64().unwrap_or_default() > 0,
         "expected the compaction span to cover at least one compacted source item"
+    );
+
+    let promotion_result: Value = rpc_json(
+        &client,
+        &supabase_url,
+        &service_role_key,
+        "ob_promote_durable_memory",
+        &serde_json::json!({
+            "p_session_id": session_id.clone(),
+            "p_records": [{
+                "title": "LCM smoke durable memory",
+                "content": "The live Open Brain LCM smoke session compacted into a persisted context packet.",
+                "type": "reference",
+                "memory_type": "session_fact",
+                "topics": ["lcm", "smoke"],
+                "source_node_ids": [summary_node_id.clone()],
+                "source_event_ids": ["message-0"],
+                "mirror_to_thoughts": true,
+            }],
+        }),
+    )
+    .await?;
+    assert_eq!(
+        promotion_result["inserted_count"].as_u64(),
+        Some(1),
+        "expected one durable memory promotion record"
+    );
+
+    let durable_rows = rest_rows(
+        &client,
+        &supabase_url,
+        &service_role_key,
+        "ob_nodes",
+        &[
+            ("session_id", format!("eq.{session_id}")),
+            (
+                "select",
+                "node_id,node_kind,metadata,source_event_ids,memory_key".to_string(),
+            ),
+            ("node_kind", "eq.durable_memory".to_string()),
+        ],
+    )
+    .await?;
+    assert_eq!(durable_rows.len(), 1, "expected one durable memory node");
+    let durable_node = &durable_rows[0];
+    let durable_node_id = durable_node["node_id"]
+        .as_str()
+        .expect("durable memory node id")
+        .to_string();
+    assert!(
+        durable_node["metadata"]["linked_thought_id"]
+            .as_str()
+            .is_some(),
+        "expected durable memory to link back to a mirrored legacy thought"
+    );
+    assert!(
+        durable_node["source_event_ids"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty()),
+        "expected durable memory to carry source event ids"
+    );
+
+    let durable_edge_rows = rest_rows(
+        &client,
+        &supabase_url,
+        &service_role_key,
+        "ob_edges",
+        &[
+            (
+                "select",
+                "from_node_id,to_node_id,relationship_type,metadata".to_string(),
+            ),
+            ("from_node_id", format!("eq.{durable_node_id}")),
+        ],
+    )
+    .await?;
+    assert!(
+        durable_edge_rows.iter().any(|row| {
+            row["relationship_type"] == "PROMOTES_TO"
+                && row["to_node_id"].as_str() == Some(summary_node_id.as_str())
+        }),
+        "expected durable memory promotion to retain lineage to its source summary node"
+    );
+
+    let thought_rows = rest_rows(
+        &client,
+        &supabase_url,
+        &service_role_key,
+        "thoughts",
+        &[("select", "id,metadata,content".to_string())],
+    )
+    .await?;
+    assert!(
+        thought_rows.iter().any(|row| {
+            row["metadata"]["ob_node_id"].as_str() == Some(durable_node_id.as_str())
+                && row["metadata"]["ob_session_id"].as_str() == Some(session_id.as_str())
+                && row["metadata"]["ob_memory_key"].as_str() == durable_node["memory_key"].as_str()
+        }),
+        "expected promoted durable memory to be mirrored into legacy thoughts"
     );
 
     eprintln!("open_brain_lcm session_id={session_id}");
