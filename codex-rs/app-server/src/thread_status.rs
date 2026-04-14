@@ -902,6 +902,9 @@ mod tests {
             source,
             git_info: None,
             name: None,
+            context_engine: None,
+            open_brain_session_id: None,
+            last_context_packet_id: None,
             turns: Vec::new(),
         }
     }

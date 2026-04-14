@@ -62,6 +62,8 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use codex_model_provider_info::built_in_model_providers;
 use codex_models_manager::ModelsManagerConfig;
+use codex_open_brain::LcmConfig;
+use codex_open_brain::OpenBrainConfig;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::Personality;
@@ -78,6 +80,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::ContextEngine;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
@@ -297,6 +300,15 @@ pub struct Config {
 
     /// Compact prompt override.
     pub compact_prompt: Option<String>,
+
+    /// Selects which context engine assembles model-visible history.
+    pub context_engine: ContextEngine,
+
+    /// Open Brain backend settings used when `context_engine = "open_brain_lcm"`.
+    pub open_brain: OpenBrainConfig,
+
+    /// LCM tuning used by the Open Brain context engine.
+    pub lcm: LcmConfig,
 
     /// Optional commit attribution text for commit message co-author trailers.
     ///
@@ -2101,6 +2113,9 @@ impl Config {
                 .or(show_raw_agent_reasoning)
                 .unwrap_or(false),
             guardian_policy_config,
+            context_engine: cfg.context_engine.unwrap_or_default(),
+            open_brain: cfg.open_brain.clone().unwrap_or_default(),
+            lcm: cfg.lcm.clone().unwrap_or_default(),
             model_reasoning_effort: config_profile
                 .model_reasoning_effort
                 .or(cfg.model_reasoning_effort),

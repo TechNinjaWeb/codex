@@ -1852,6 +1852,7 @@ dependencies = [
  "codex-git-utils",
  "codex-model-provider-info",
  "codex-network-proxy",
+ "codex-open-brain",
  "codex-protocol",
  "codex-utils-absolute-path",
  "dunce",
@@ -1919,6 +1920,7 @@ dependencies = [
  "codex-model-provider-info",
  "codex-models-manager",
  "codex-network-proxy",
+ "codex-open-brain",
  "codex-otel",
  "codex-plugin",
  "codex-protocol",
@@ -2497,6 +2499,18 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+]
+
+[[package]]
+name = "codex-open-brain"
+version = "0.0.0"
+dependencies = [
+ "codex-protocol",
+ "reqwest",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

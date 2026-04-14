@@ -6,6 +6,7 @@
 //! slash-command recall follows the same submitted-input rule as ordinary text.
 
 use super::*;
+use crate::app_event::LcmCommand;
 
 impl ChatWidget {
     /// Dispatch a bare slash command and record its staged local-history entry.
@@ -330,6 +331,10 @@ impl ChatWidget {
                     );
                 }
             }
+            SlashCommand::Lcm => {
+                self.app_event_tx
+                    .send(AppEvent::RunLcmCommand(LcmCommand::Overview));
+            }
             SlashCommand::TestApproval => {
                 use std::collections::HashMap;
 
@@ -512,6 +517,44 @@ impl ChatWidget {
                         path: prepared_args,
                     });
                 self.bottom_pane.drain_pending_submission_state();
+            }
+            SlashCommand::Lcm if !trimmed.is_empty() => {
+                let prepared_args = if self.bottom_pane.composer_text().is_empty() {
+                    args
+                } else {
+                    let Some((prepared_args, _prepared_elements)) = self
+                        .bottom_pane
+                        .prepare_inline_args_submission(/*record_history*/ false)
+                    else {
+                        return;
+                    };
+                    prepared_args
+                };
+                let trimmed = prepared_args.trim();
+                let (subcommand, remainder) = trimmed
+                    .split_once(char::is_whitespace)
+                    .map(|(subcommand, remainder)| (subcommand, remainder.trim()))
+                    .unwrap_or((trimmed, ""));
+                let action = match subcommand.to_ascii_lowercase().as_str() {
+                    "graph" => Some(LcmCommand::Graph),
+                    "grep" if !remainder.is_empty() => {
+                        Some(LcmCommand::Search(remainder.to_string()))
+                    }
+                    "expand" if !remainder.is_empty() => {
+                        Some(LcmCommand::Expand(remainder.to_string()))
+                    }
+                    "thoughts" => Some(LcmCommand::Thoughts),
+                    _ => None,
+                };
+                match action {
+                    Some(action) => {
+                        self.app_event_tx.send(AppEvent::RunLcmCommand(action));
+                        self.bottom_pane.drain_pending_submission_state();
+                    }
+                    None => self.add_error_message(
+                        "Usage: /lcm [graph|grep <query>|expand <node-id>|thoughts]".to_string(),
+                    ),
+                }
             }
             _ => self.dispatch_command(cmd),
         }

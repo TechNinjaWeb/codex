@@ -95,6 +95,15 @@ pub(crate) enum RateLimitRefreshOrigin {
     StatusCommand { request_id: u64 },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LcmCommand {
+    Overview,
+    Graph,
+    Search(String),
+    Expand(String),
+    Thoughts,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum AppEvent {
@@ -179,6 +188,9 @@ pub(crate) enum AppEvent {
 
     /// Result of computing a `/diff` command.
     DiffResult(String),
+
+    /// Run an Open Brain LCM inspector command for the active thread.
+    RunLcmCommand(LcmCommand),
 
     /// Open the app link view in the bottom pane.
     OpenAppLink {

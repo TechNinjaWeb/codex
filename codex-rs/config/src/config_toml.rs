@@ -36,6 +36,8 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_open_brain::LcmConfig;
+use codex_open_brain::OpenBrainConfig;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
@@ -48,6 +50,7 @@ use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::ContextEngine;
 use codex_protocol::protocol::ReadOnlyAccess;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -143,6 +146,15 @@ pub struct ConfigToml {
 
     /// Compact prompt used for history compaction.
     pub compact_prompt: Option<String>,
+
+    /// Selects which context engine assembles model-visible history.
+    pub context_engine: Option<ContextEngine>,
+
+    /// Open Brain runtime/backend settings.
+    pub open_brain: Option<OpenBrainConfig>,
+
+    /// LCM tuning for `open_brain_lcm`.
+    pub lcm: Option<LcmConfig>,
 
     /// Optional commit attribution text for commit message co-author trailers.
     ///

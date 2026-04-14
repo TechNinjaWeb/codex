@@ -16,6 +16,7 @@ mod realtime_conversation;
 mod realtime_prompt;
 pub use codex::SteerInputError;
 mod codex_thread;
+mod compact_lcm;
 mod compact_remote;
 pub use codex_thread::CodexThread;
 pub use codex_thread::ThreadConfigSnapshot;

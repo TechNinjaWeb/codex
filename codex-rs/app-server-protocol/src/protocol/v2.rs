@@ -51,6 +51,7 @@ use codex_protocol::plan_tool::StepStatus as CorePlanStepStatus;
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
 use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
 use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
+use codex_protocol::protocol::ContextEngine as CoreContextEngine;
 use codex_protocol::protocol::CreditsSnapshot as CoreCreditsSnapshot;
 use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
@@ -138,6 +139,32 @@ macro_rules! v2_enum_from_core {
 pub enum NonSteerableTurnKind {
     Review,
     Compact,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/")]
+pub enum ContextEngine {
+    Native,
+    OpenBrainLcm,
+}
+
+impl ContextEngine {
+    pub fn to_core(self) -> CoreContextEngine {
+        match self {
+            Self::Native => CoreContextEngine::Native,
+            Self::OpenBrainLcm => CoreContextEngine::OpenBrainLcm,
+        }
+    }
+}
+
+impl From<CoreContextEngine> for ContextEngine {
+    fn from(value: CoreContextEngine) -> Self {
+        match value {
+            CoreContextEngine::Native => Self::Native,
+            CoreContextEngine::OpenBrainLcm => Self::OpenBrainLcm,
+        }
+    }
 }
 
 /// This translation layer make sure that we expose codex error code in camel case.
@@ -3091,6 +3118,127 @@ pub struct ThreadMemoryModeSetResponse {}
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ThreadContextEngineSetParams {
+    pub thread_id: String,
+    pub context_engine: ContextEngine,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadContextEngineSetResponse {
+    pub thread_id: String,
+    pub context_engine: ContextEngine,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadContextGraphParams {
+    pub thread_id: String,
+    #[serde(default)]
+    pub include_superseded: bool,
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadContextGraphResponse {
+    pub thread_id: String,
+    pub graph: JsonValue,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadContextDescribeParams {
+    pub thread_id: String,
+    pub node_id: String,
+    #[serde(default)]
+    pub include_superseded: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadContextDescribeResponse {
+    pub thread_id: String,
+    pub node_id: String,
+    pub description: JsonValue,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadContextSearchParams {
+    pub thread_id: String,
+    pub query: String,
+    #[serde(default)]
+    pub include_superseded: bool,
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadContextSearchResponse {
+    pub thread_id: String,
+    pub results: JsonValue,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadContextExpandParams {
+    pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub node_id: Option<String>,
+    #[ts(optional = nullable)]
+    pub query: Option<String>,
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+    #[ts(optional = nullable)]
+    pub token_budget: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadContextExpandResponse {
+    pub thread_id: String,
+    pub result: JsonValue,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadContextPacketParams {
+    pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub query: Option<String>,
+    #[ts(optional = nullable)]
+    pub token_budget: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadContextPacketResponse {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub packet: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub packets: Option<Vec<JsonValue>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct ThreadUnarchiveResponse {
     pub thread: Thread,
 }
@@ -3768,6 +3916,15 @@ pub struct Thread {
     pub git_info: Option<GitInfo>,
     /// Optional user-facing thread title.
     pub name: Option<String>,
+    /// Active context engine for this thread when known.
+    #[ts(optional = nullable)]
+    pub context_engine: Option<ContextEngine>,
+    /// Open Brain session id associated with this thread when available.
+    #[ts(optional = nullable)]
+    pub open_brain_session_id: Option<String>,
+    /// Most recently persisted Open Brain context packet id for this thread.
+    #[ts(optional = nullable)]
+    pub last_context_packet_id: Option<String>,
     /// Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read`
     /// (when `includeTurns` is true) responses.
     /// For all other responses and notifications returning a Thread,

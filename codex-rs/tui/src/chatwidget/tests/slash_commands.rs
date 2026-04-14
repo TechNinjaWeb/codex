@@ -581,6 +581,57 @@ async fn slash_resume_with_arg_requests_named_session() {
 }
 
 #[tokio::test]
+async fn slash_lcm_requests_overview() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::Lcm);
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::RunLcmCommand(
+            crate::app_event::LcmCommand::Overview
+        ))
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn slash_lcm_grep_requests_search() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.bottom_pane.set_composer_text(
+        "/lcm grep packet frontier".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::RunLcmCommand(crate::app_event::LcmCommand::Search(query))) if query == "packet frontier"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn slash_lcm_invalid_args_render_usage() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/lcm what-is-this");
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Usage: /lcm [graph|grep <query>|expand <node-id>|thoughts]"),
+        "expected usage message, got: {rendered:?}"
+    );
+}
+
+#[tokio::test]
 async fn slash_fork_requests_current_fork() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

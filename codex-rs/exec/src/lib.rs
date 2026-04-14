@@ -1033,6 +1033,8 @@ fn session_configured_from_thread_response(
         thread_name,
         model,
         model_provider_id,
+        context_engine: None,
+        open_brain: None,
         service_tier,
         approval_policy,
         approvals_reviewer,

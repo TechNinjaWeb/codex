@@ -1290,6 +1290,8 @@ fn thread_session_state_to_legacy_event(
         thread_name: session.thread_name,
         model: session.model,
         model_provider_id: session.model_provider_id,
+        context_engine: None,
+        open_brain: None,
         service_tier: session.service_tier,
         approval_policy: session.approval_policy,
         approvals_reviewer: session.approvals_reviewer,

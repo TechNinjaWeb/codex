@@ -27,7 +27,41 @@ impl SessionTask for CompactTask {
         _cancellation_token: CancellationToken,
     ) -> Option<String> {
         let session = session.clone_session();
-        let _ = if crate::compact::should_use_remote_compact_task(&ctx.provider) {
+        let _ = if session.context_engine().await
+            == codex_protocol::protocol::ContextEngine::OpenBrainLcm
+        {
+            session.services.session_telemetry.counter(
+                "codex.task.compact",
+                /*inc*/ 1,
+                &[("type", "open_brain_lcm")],
+            );
+            match crate::compact_lcm::run_lcm_compact_task(
+                session.clone(),
+                ctx.clone(),
+                input.clone(),
+            )
+            .await
+            {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    if session.should_emit_open_brain_warning().await {
+                        session
+                            .notify_background_event(
+                                &ctx,
+                                format!(
+                                    "Open Brain LCM compaction failed ({err}); falling back to native compaction."
+                                ),
+                            )
+                            .await;
+                    }
+                    if crate::compact::should_use_remote_compact_task(&ctx.provider) {
+                        crate::compact_remote::run_remote_compact_task(session.clone(), ctx).await
+                    } else {
+                        crate::compact::run_compact_task(session.clone(), ctx, input).await
+                    }
+                }
+            }
+        } else if crate::compact::should_use_remote_compact_task(&ctx.provider) {
             session.services.session_telemetry.counter(
                 "codex.task.compact",
                 /*inc*/ 1,

@@ -14,6 +14,7 @@ use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigWriteResponse;
+use codex_app_server_protocol::ContextEngine;
 use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::GetAccountResponse;
@@ -32,6 +33,18 @@ use codex_app_server_protocol::ThreadBackgroundTerminalsCleanParams;
 use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
+use codex_app_server_protocol::ThreadContextDescribeParams;
+use codex_app_server_protocol::ThreadContextDescribeResponse;
+use codex_app_server_protocol::ThreadContextEngineSetParams;
+use codex_app_server_protocol::ThreadContextEngineSetResponse;
+use codex_app_server_protocol::ThreadContextExpandParams;
+use codex_app_server_protocol::ThreadContextExpandResponse;
+use codex_app_server_protocol::ThreadContextGraphParams;
+use codex_app_server_protocol::ThreadContextGraphResponse;
+use codex_app_server_protocol::ThreadContextPacketParams;
+use codex_app_server_protocol::ThreadContextPacketResponse;
+use codex_app_server_protocol::ThreadContextSearchParams;
+use codex_app_server_protocol::ThreadContextSearchResponse;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadListParams;
@@ -407,6 +420,131 @@ impl AppServerSession {
             .await
             .wrap_err("thread/read failed during TUI session lookup")?;
         Ok(response.thread)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn thread_context_engine_set(
+        &mut self,
+        thread_id: ThreadId,
+        context_engine: ContextEngine,
+    ) -> Result<ThreadContextEngineSetResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadContextEngineSet {
+                request_id,
+                params: ThreadContextEngineSetParams {
+                    thread_id: thread_id.to_string(),
+                    context_engine,
+                },
+            })
+            .await
+            .wrap_err("thread/contextEngineSet failed in TUI")
+    }
+
+    pub(crate) async fn thread_context_graph(
+        &mut self,
+        thread_id: ThreadId,
+        include_superseded: bool,
+        limit: Option<u32>,
+    ) -> Result<ThreadContextGraphResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadContextGraph {
+                request_id,
+                params: ThreadContextGraphParams {
+                    thread_id: thread_id.to_string(),
+                    include_superseded,
+                    limit,
+                },
+            })
+            .await
+            .wrap_err("thread/contextGraph failed in TUI")
+    }
+
+    pub(crate) async fn thread_context_describe(
+        &mut self,
+        thread_id: ThreadId,
+        node_id: String,
+        include_superseded: bool,
+    ) -> Result<ThreadContextDescribeResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadContextDescribe {
+                request_id,
+                params: ThreadContextDescribeParams {
+                    thread_id: thread_id.to_string(),
+                    node_id,
+                    include_superseded,
+                },
+            })
+            .await
+            .wrap_err("thread/contextDescribe failed in TUI")
+    }
+
+    pub(crate) async fn thread_context_search(
+        &mut self,
+        thread_id: ThreadId,
+        query: String,
+        include_superseded: bool,
+        limit: Option<u32>,
+    ) -> Result<ThreadContextSearchResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadContextSearch {
+                request_id,
+                params: ThreadContextSearchParams {
+                    thread_id: thread_id.to_string(),
+                    query,
+                    include_superseded,
+                    limit,
+                },
+            })
+            .await
+            .wrap_err("thread/contextSearch failed in TUI")
+    }
+
+    pub(crate) async fn thread_context_expand(
+        &mut self,
+        thread_id: ThreadId,
+        node_id: Option<String>,
+        query: Option<String>,
+        limit: Option<u32>,
+        token_budget: Option<u32>,
+    ) -> Result<ThreadContextExpandResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadContextExpand {
+                request_id,
+                params: ThreadContextExpandParams {
+                    thread_id: thread_id.to_string(),
+                    node_id,
+                    query,
+                    limit,
+                    token_budget,
+                },
+            })
+            .await
+            .wrap_err("thread/contextExpand failed in TUI")
+    }
+
+    pub(crate) async fn thread_context_packet(
+        &mut self,
+        thread_id: ThreadId,
+        query: Option<String>,
+        token_budget: Option<u32>,
+    ) -> Result<ThreadContextPacketResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadContextPacket {
+                request_id,
+                params: ThreadContextPacketParams {
+                    thread_id: thread_id.to_string(),
+                    query,
+                    token_budget,
+                },
+            })
+            .await
+            .wrap_err("thread/contextPacket failed in TUI")
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1294,6 +1432,9 @@ mod tests {
                 agent_role: None,
                 git_info: None,
                 name: None,
+                context_engine: None,
+                open_brain_session_id: None,
+                last_context_packet_id: None,
                 turns: vec![Turn {
                     id: "turn-1".to_string(),
                     items: vec![

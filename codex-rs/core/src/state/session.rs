@@ -33,6 +33,8 @@ pub(crate) struct SessionState {
     pub(crate) active_connector_selection: HashSet<String>,
     pub(crate) pending_session_start_source: Option<codex_hooks::SessionStartSource>,
     granted_permissions: Option<PermissionProfile>,
+    last_context_packet_id: Option<String>,
+    open_brain_warning_emitted: bool,
 }
 
 impl SessionState {
@@ -51,6 +53,8 @@ impl SessionState {
             active_connector_selection: HashSet::new(),
             pending_session_start_source: None,
             granted_permissions: None,
+            last_context_packet_id: None,
+            open_brain_warning_emitted: false,
         }
     }
 
@@ -213,6 +217,23 @@ impl SessionState {
 
     pub(crate) fn granted_permissions(&self) -> Option<PermissionProfile> {
         self.granted_permissions.clone()
+    }
+
+    pub(crate) fn last_context_packet_id(&self) -> Option<String> {
+        self.last_context_packet_id.clone()
+    }
+
+    pub(crate) fn set_last_context_packet_id(&mut self, packet_id: Option<String>) {
+        self.last_context_packet_id = packet_id;
+    }
+
+    pub(crate) fn mark_open_brain_warning_emitted(&mut self) -> bool {
+        if self.open_brain_warning_emitted {
+            false
+        } else {
+            self.open_brain_warning_emitted = true;
+            true
+        }
     }
 }
 

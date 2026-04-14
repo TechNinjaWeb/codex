@@ -128,6 +128,18 @@ use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
+use codex_app_server_protocol::ThreadContextDescribeParams;
+use codex_app_server_protocol::ThreadContextDescribeResponse;
+use codex_app_server_protocol::ThreadContextEngineSetParams;
+use codex_app_server_protocol::ThreadContextEngineSetResponse;
+use codex_app_server_protocol::ThreadContextExpandParams;
+use codex_app_server_protocol::ThreadContextExpandResponse;
+use codex_app_server_protocol::ThreadContextGraphParams;
+use codex_app_server_protocol::ThreadContextGraphResponse;
+use codex_app_server_protocol::ThreadContextPacketParams;
+use codex_app_server_protocol::ThreadContextPacketResponse;
+use codex_app_server_protocol::ThreadContextSearchParams;
+use codex_app_server_protocol::ThreadContextSearchResponse;
 use codex_app_server_protocol::ThreadDecrementElicitationParams;
 use codex_app_server_protocol::ThreadDecrementElicitationResponse;
 use codex_app_server_protocol::ThreadForkParams;
@@ -296,6 +308,7 @@ use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::McpAuthStatus as CoreMcpAuthStatus;
 use codex_protocol::protocol::McpServerRefreshConfig;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::OpenBrainSessionMetadata;
 use codex_protocol::protocol::RateLimitSnapshot as CoreRateLimitSnapshot;
 use codex_protocol::protocol::RealtimeVoicesList;
 use codex_protocol::protocol::ReviewDelivery as CoreReviewDelivery;
@@ -890,6 +903,30 @@ impl CodexMessageProcessor {
             }
             ClientRequest::ThreadMemoryModeSet { request_id, params } => {
                 self.thread_memory_mode_set(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::ThreadContextEngineSet { request_id, params } => {
+                self.thread_context_engine_set(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::ThreadContextGraph { request_id, params } => {
+                self.thread_context_graph(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::ThreadContextDescribe { request_id, params } => {
+                self.thread_context_describe(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::ThreadContextSearch { request_id, params } => {
+                self.thread_context_search(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::ThreadContextExpand { request_id, params } => {
+                self.thread_context_expand(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::ThreadContextPacket { request_id, params } => {
+                self.thread_context_packet(to_connection_request_id(request_id), params)
                     .await;
             }
             ClientRequest::ThreadUnarchive { request_id, params } => {
@@ -2601,6 +2638,11 @@ impl CodexMessageProcessor {
                         .await,
                     /*has_in_progress_turn*/ false,
                 );
+                apply_open_brain_thread_metadata(
+                    &mut thread,
+                    session_configured.context_engine.map(Into::into),
+                    session_configured.open_brain.clone(),
+                );
 
                 let response = ThreadStartResponse {
                     thread: thread.clone(),
@@ -3028,6 +3070,321 @@ impl CodexMessageProcessor {
         self.outgoing
             .send_response(request_id, ThreadMemoryModeSetResponse {})
             .await;
+    }
+
+    async fn thread_context_engine_set(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadContextEngineSetParams,
+    ) {
+        let (thread_id, thread) = match self.load_thread(&params.thread_id).await {
+            Ok(value) => value,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        match thread
+            .set_context_engine(params.context_engine.to_core())
+            .await
+        {
+            Ok(context_engine) => {
+                self.outgoing
+                    .send_response(
+                        request_id,
+                        ThreadContextEngineSetResponse {
+                            thread_id: thread_id.to_string(),
+                            context_engine: context_engine.into(),
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                self.send_internal_error(
+                    request_id,
+                    format!("failed to set context engine: {err}"),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn thread_context_graph(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadContextGraphParams,
+    ) {
+        let (_, thread) = match self.load_thread(&params.thread_id).await {
+            Ok(value) => value,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        match thread
+            .context_graph(
+                params.include_superseded,
+                params.limit.unwrap_or(200) as usize,
+            )
+            .await
+        {
+            Ok(graph) => match serde_json::to_value(graph) {
+                Ok(graph) => {
+                    self.outgoing
+                        .send_response(
+                            request_id,
+                            ThreadContextGraphResponse {
+                                thread_id: params.thread_id,
+                                graph,
+                            },
+                        )
+                        .await;
+                }
+                Err(err) => {
+                    self.send_internal_error(
+                        request_id,
+                        format!("failed to serialize context graph: {err}"),
+                    )
+                    .await;
+                }
+            },
+            Err(err) => {
+                self.send_internal_error(
+                    request_id,
+                    format!("failed to fetch context graph: {err}"),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn thread_context_describe(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadContextDescribeParams,
+    ) {
+        let (_, thread) = match self.load_thread(&params.thread_id).await {
+            Ok(value) => value,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        match thread
+            .context_describe(&params.node_id, params.include_superseded)
+            .await
+        {
+            Ok(description) => match serde_json::to_value(description) {
+                Ok(description) => {
+                    self.outgoing
+                        .send_response(
+                            request_id,
+                            ThreadContextDescribeResponse {
+                                thread_id: params.thread_id,
+                                node_id: params.node_id,
+                                description,
+                            },
+                        )
+                        .await;
+                }
+                Err(err) => {
+                    self.send_internal_error(
+                        request_id,
+                        format!("failed to serialize node description: {err}"),
+                    )
+                    .await;
+                }
+            },
+            Err(err) => {
+                self.send_internal_error(
+                    request_id,
+                    format!("failed to describe context node: {err}"),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn thread_context_search(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadContextSearchParams,
+    ) {
+        let (_, thread) = match self.load_thread(&params.thread_id).await {
+            Ok(value) => value,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        match thread
+            .context_search(
+                &params.query,
+                params.include_superseded,
+                params.limit.unwrap_or(20) as usize,
+            )
+            .await
+        {
+            Ok(results) => match serde_json::to_value(results) {
+                Ok(results) => {
+                    self.outgoing
+                        .send_response(
+                            request_id,
+                            ThreadContextSearchResponse {
+                                thread_id: params.thread_id,
+                                results,
+                            },
+                        )
+                        .await;
+                }
+                Err(err) => {
+                    self.send_internal_error(
+                        request_id,
+                        format!("failed to serialize context search results: {err}"),
+                    )
+                    .await;
+                }
+            },
+            Err(err) => {
+                self.send_internal_error(
+                    request_id,
+                    format!("failed to search thread context: {err}"),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn thread_context_expand(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadContextExpandParams,
+    ) {
+        let (_, thread) = match self.load_thread(&params.thread_id).await {
+            Ok(value) => value,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let result = if let Some(node_id) = params.node_id.as_deref() {
+            thread
+                .context_expand(node_id, params.limit.unwrap_or(64) as usize)
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(Into::into))
+        } else if let Some(query) = params.query.as_deref() {
+            thread
+                .context_expand_query(
+                    query,
+                    params.limit.unwrap_or(8) as usize,
+                    params.token_budget.unwrap_or(4_000) as usize,
+                )
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(Into::into))
+        } else {
+            Err(anyhow::anyhow!(
+                "Provide either node_id or query for thread/contextExpand"
+            ))
+        };
+
+        match result {
+            Ok(result) => {
+                self.outgoing
+                    .send_response(
+                        request_id,
+                        ThreadContextExpandResponse {
+                            thread_id: params.thread_id,
+                            result,
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                self.send_internal_error(
+                    request_id,
+                    format!("failed to expand thread context: {err}"),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn thread_context_packet(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadContextPacketParams,
+    ) {
+        let (_, thread) = match self.load_thread(&params.thread_id).await {
+            Ok(value) => value,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        if params.query.is_none() && params.token_budget.is_none() {
+            match thread
+                .context_packets(20)
+                .await
+                .and_then(|packets| serde_json::to_value(packets).map_err(Into::into))
+            {
+                Ok(packets) => {
+                    let packets = packets.as_array().cloned().unwrap_or_default();
+                    self.outgoing
+                        .send_response(
+                            request_id,
+                            ThreadContextPacketResponse {
+                                thread_id: params.thread_id,
+                                packet: None,
+                                packets: Some(packets),
+                            },
+                        )
+                        .await;
+                }
+                Err(err) => {
+                    self.send_internal_error(
+                        request_id,
+                        format!("failed to list context packets: {err}"),
+                    )
+                    .await;
+                }
+            }
+            return;
+        }
+
+        match thread
+            .context_packet(
+                params.query.as_deref(),
+                params.token_budget.unwrap_or(4_096) as usize,
+            )
+            .await
+            .and_then(|packet| serde_json::to_value(packet).map_err(Into::into))
+        {
+            Ok(packet) => {
+                self.outgoing
+                    .send_response(
+                        request_id,
+                        ThreadContextPacketResponse {
+                            thread_id: params.thread_id,
+                            packet: Some(packet),
+                            packets: None,
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                self.send_internal_error(
+                    request_id,
+                    format!("failed to assemble context packet: {err}"),
+                )
+                .await;
+            }
+        }
     }
 
     async fn thread_metadata_update(
@@ -3503,6 +3860,13 @@ impl CodexMessageProcessor {
                     /*has_in_progress_turn*/ false,
                 );
                 self.attach_thread_name(thread_id, &mut thread).await;
+                let rollout_path = thread.path.clone();
+                hydrate_thread_open_brain_metadata(
+                    &mut thread,
+                    /*loaded_thread*/ None,
+                    rollout_path.as_deref(),
+                )
+                .await;
                 let thread_id = thread.id.clone();
                 let response = ThreadUnarchiveResponse { thread };
                 self.outgoing.send_response(request_id, response).await;
@@ -3988,6 +4352,12 @@ impl CodexMessageProcessor {
             thread_status,
             has_live_in_progress_turn,
         );
+        hydrate_thread_open_brain_metadata(
+            &mut thread,
+            loaded_thread.as_ref(),
+            rollout_path.as_deref(),
+        )
+        .await;
         let response = ThreadReadResponse { thread };
         self.outgoing.send_response(request_id, response).await;
     }
@@ -4232,6 +4602,11 @@ impl CodexMessageProcessor {
                     &mut thread,
                     thread_status,
                     /*has_live_in_progress_turn*/ false,
+                );
+                apply_open_brain_thread_metadata(
+                    &mut thread,
+                    session_configured.context_engine.map(Into::into),
+                    session_configured.open_brain.clone(),
                 );
 
                 let response = ThreadResumeResponse {
@@ -4870,6 +5245,11 @@ impl CodexMessageProcessor {
                 .loaded_status_for_thread(&thread.id)
                 .await,
             /*has_in_progress_turn*/ false,
+        );
+        apply_open_brain_thread_metadata(
+            &mut thread,
+            session_configured.context_engine.map(Into::into),
+            session_configured.open_brain.clone(),
         );
 
         let response = ThreadForkResponse {
@@ -9663,6 +10043,9 @@ fn build_thread_from_snapshot(
         source: config_snapshot.session_source.clone().into(),
         git_info: None,
         name: None,
+        context_engine: None,
+        open_brain_session_id: None,
+        last_context_packet_id: None,
         turns: Vec::new(),
     }
 }
@@ -9706,8 +10089,48 @@ pub(crate) fn summary_to_thread(summary: ConversationSummary) -> Thread {
         source: source.into(),
         git_info,
         name: None,
+        context_engine: None,
+        open_brain_session_id: None,
+        last_context_packet_id: None,
         turns: Vec::new(),
     }
+}
+
+fn apply_open_brain_thread_metadata(
+    thread: &mut Thread,
+    context_engine: Option<codex_app_server_protocol::ContextEngine>,
+    open_brain: Option<OpenBrainSessionMetadata>,
+) {
+    thread.context_engine = context_engine;
+    thread.open_brain_session_id = open_brain.as_ref().and_then(|meta| meta.session_id.clone());
+    thread.last_context_packet_id = open_brain.and_then(|meta| meta.last_context_packet_id);
+}
+
+async fn hydrate_thread_open_brain_metadata(
+    thread: &mut Thread,
+    loaded_thread: Option<&Arc<CodexThread>>,
+    rollout_path: Option<&Path>,
+) {
+    if let Some(loaded_thread) = loaded_thread {
+        apply_open_brain_thread_metadata(
+            thread,
+            Some(loaded_thread.context_engine().await.into()),
+            loaded_thread.open_brain_session_metadata().await,
+        );
+        return;
+    }
+
+    let Some(rollout_path) = rollout_path else {
+        return;
+    };
+    let Ok(session_meta) = read_session_meta_line(rollout_path).await else {
+        return;
+    };
+    apply_open_brain_thread_metadata(
+        thread,
+        session_meta.meta.context_engine.map(Into::into),
+        session_meta.meta.open_brain,
+    );
 }
 
 #[cfg(test)]

@@ -2646,6 +2646,12 @@ mod tests {
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
                 replacement_history: None,
+                summary_node_id: None,
+                span_id: None,
+                depth: None,
+                src_tok: None,
+                desc_tok: None,
+                fresh_tail_count: None,
             }),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-compact".into(),

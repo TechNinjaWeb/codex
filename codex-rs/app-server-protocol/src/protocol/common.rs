@@ -289,6 +289,30 @@ client_request_definitions! {
         params: v2::ThreadMemoryModeSetParams,
         response: v2::ThreadMemoryModeSetResponse,
     },
+    ThreadContextEngineSet => "thread/contextEngineSet" {
+        params: v2::ThreadContextEngineSetParams,
+        response: v2::ThreadContextEngineSetResponse,
+    },
+    ThreadContextGraph => "thread/contextGraph" {
+        params: v2::ThreadContextGraphParams,
+        response: v2::ThreadContextGraphResponse,
+    },
+    ThreadContextDescribe => "thread/contextDescribe" {
+        params: v2::ThreadContextDescribeParams,
+        response: v2::ThreadContextDescribeResponse,
+    },
+    ThreadContextSearch => "thread/contextSearch" {
+        params: v2::ThreadContextSearchParams,
+        response: v2::ThreadContextSearchResponse,
+    },
+    ThreadContextExpand => "thread/contextExpand" {
+        params: v2::ThreadContextExpandParams,
+        response: v2::ThreadContextExpandResponse,
+    },
+    ThreadContextPacket => "thread/contextPacket" {
+        params: v2::ThreadContextPacketParams,
+        response: v2::ThreadContextPacketResponse,
+    },
     ThreadUnarchive => "thread/unarchive" {
         params: v2::ThreadUnarchiveParams,
         response: v2::ThreadUnarchiveResponse,
@@ -1413,6 +1437,9 @@ mod tests {
                     agent_role: None,
                     git_info: None,
                     name: None,
+                    context_engine: None,
+                    open_brain_session_id: None,
+                    last_context_packet_id: None,
                     turns: Vec::new(),
                 },
                 model: "gpt-5".to_string(),
@@ -1453,6 +1480,9 @@ mod tests {
                         "agentRole": null,
                         "gitInfo": null,
                         "name": null,
+                        "contextEngine": null,
+                        "openBrainSessionId": null,
+                        "lastContextPacketId": null,
                         "turns": []
                     },
                     "model": "gpt-5",

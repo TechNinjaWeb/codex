@@ -87,6 +87,13 @@ use codex_models_manager::manager::RefreshStrategy;
 use codex_network_proxy::NetworkProxy;
 use codex_network_proxy::NetworkProxyAuditMetadata;
 use codex_network_proxy::normalize_host;
+use codex_open_brain::OpenBrainExpandQueryResults;
+use codex_open_brain::OpenBrainExpansion;
+use codex_open_brain::OpenBrainGraphView;
+use codex_open_brain::OpenBrainNodeDescription;
+use codex_open_brain::OpenBrainRuntime;
+use codex_open_brain::OpenBrainRuntimeError;
+use codex_open_brain::OpenBrainSearchResults;
 use codex_otel::current_span_trace_id;
 use codex_otel::current_span_w3c_trace_context;
 use codex_otel::set_parent_from_w3c_trace_context;
@@ -112,11 +119,13 @@ use codex_protocol::models::format_allow_prefixes;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
+use codex_protocol::protocol::ContextEngine;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::HasLegacyEvent;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
+use codex_protocol::protocol::OpenBrainSessionMetadata;
 use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
@@ -642,6 +651,8 @@ impl Codex {
             personality: config.personality,
             base_instructions,
             compact_prompt: config.compact_prompt.clone(),
+            context_engine: config.context_engine,
+            open_brain_runtime: None,
             approval_policy: config.permissions.approval_policy.clone(),
             approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
@@ -751,6 +762,123 @@ impl Codex {
         mode: codex_protocol::protocol::ThreadMemoryMode,
     ) -> anyhow::Result<()> {
         handlers::persist_thread_memory_mode_update(&self.session, mode).await
+    }
+
+    pub async fn set_context_engine(
+        &self,
+        requested: ContextEngine,
+    ) -> anyhow::Result<ContextEngine> {
+        let effective_engine = {
+            let mut state = self.session.state.lock().await;
+            let mut updated = state.session_configuration.clone();
+            let (resolved_engine, open_brain_runtime, _) = match requested {
+                ContextEngine::Native => (ContextEngine::Native, None, None),
+                ContextEngine::OpenBrainLcm => resolve_open_brain_runtime(
+                    updated.original_config_do_not_use.as_ref(),
+                    self.session.conversation_id,
+                ),
+            };
+            updated.context_engine = resolved_engine;
+            updated.open_brain_runtime = open_brain_runtime;
+            state.session_configuration = updated;
+            resolved_engine
+        };
+        handlers::persist_context_engine_metadata(&self.session).await?;
+        Ok(effective_engine)
+    }
+
+    pub async fn context_graph(
+        &self,
+        include_superseded: bool,
+        limit: usize,
+    ) -> anyhow::Result<OpenBrainGraphView> {
+        let runtime =
+            self.session.open_brain_runtime().await.ok_or_else(|| {
+                anyhow::anyhow!("Open Brain runtime is not active for this thread")
+            })?;
+        Ok(runtime.graph_view(include_superseded, limit).await?)
+    }
+
+    pub async fn context_describe(
+        &self,
+        node_id: &str,
+        include_superseded: bool,
+    ) -> anyhow::Result<OpenBrainNodeDescription> {
+        let runtime =
+            self.session.open_brain_runtime().await.ok_or_else(|| {
+                anyhow::anyhow!("Open Brain runtime is not active for this thread")
+            })?;
+        Ok(runtime.describe_node(node_id, include_superseded).await?)
+    }
+
+    pub async fn context_search(
+        &self,
+        query: &str,
+        include_superseded: bool,
+        limit: usize,
+    ) -> anyhow::Result<OpenBrainSearchResults> {
+        let runtime =
+            self.session.open_brain_runtime().await.ok_or_else(|| {
+                anyhow::anyhow!("Open Brain runtime is not active for this thread")
+            })?;
+        Ok(runtime.search(query, include_superseded, limit).await?)
+    }
+
+    pub async fn context_expand(
+        &self,
+        node_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<OpenBrainExpansion> {
+        let runtime =
+            self.session.open_brain_runtime().await.ok_or_else(|| {
+                anyhow::anyhow!("Open Brain runtime is not active for this thread")
+            })?;
+        Ok(runtime.expand(node_id, limit).await?)
+    }
+
+    pub async fn context_expand_query(
+        &self,
+        query: &str,
+        limit: usize,
+        token_budget: usize,
+    ) -> anyhow::Result<OpenBrainExpandQueryResults> {
+        let runtime =
+            self.session.open_brain_runtime().await.ok_or_else(|| {
+                anyhow::anyhow!("Open Brain runtime is not active for this thread")
+            })?;
+        Ok(runtime.expand_query(query, limit, token_budget).await?)
+    }
+
+    pub async fn context_packet(
+        &self,
+        query: Option<&str>,
+        token_budget: usize,
+    ) -> anyhow::Result<codex_open_brain::ContextPacket> {
+        let runtime =
+            self.session.open_brain_runtime().await.ok_or_else(|| {
+                anyhow::anyhow!("Open Brain runtime is not active for this thread")
+            })?;
+        let packet = runtime.assemble_context(query, token_budget).await?;
+        self.session
+            .persist_open_brain_packet_metadata(packet.packet_id.clone())
+            .await;
+        Ok(packet)
+    }
+
+    pub async fn context_packets(&self, limit: usize) -> anyhow::Result<Vec<serde_json::Value>> {
+        let runtime =
+            self.session.open_brain_runtime().await.ok_or_else(|| {
+                anyhow::anyhow!("Open Brain runtime is not active for this thread")
+            })?;
+        Ok(runtime.list_context_packets(limit).await?)
+    }
+
+    pub async fn context_engine(&self) -> ContextEngine {
+        self.session.context_engine().await
+    }
+
+    pub async fn open_brain_session_metadata(&self) -> Option<OpenBrainSessionMetadata> {
+        self.session.open_brain_session_metadata().await
     }
 
     pub async fn shutdown_and_wait(&self) -> CodexResult<()> {
@@ -1172,6 +1300,8 @@ pub(crate) struct SessionConfiguration {
 
     /// Compact prompt override.
     compact_prompt: Option<String>,
+    context_engine: ContextEngine,
+    open_brain_runtime: Option<OpenBrainRuntime>,
 
     /// When to escalate for approval for execution
     approval_policy: Constrained<AskForApproval>,
@@ -1209,6 +1339,15 @@ pub(crate) struct SessionConfiguration {
 impl SessionConfiguration {
     pub(crate) fn codex_home(&self) -> &PathBuf {
         &self.codex_home
+    }
+
+    fn open_brain_session_metadata(&self) -> Option<OpenBrainSessionMetadata> {
+        self.open_brain_runtime
+            .as_ref()
+            .map(|runtime| OpenBrainSessionMetadata {
+                session_id: Some(runtime.session_id().to_string()),
+                last_context_packet_id: None,
+            })
     }
 
     fn thread_config_snapshot(&self) -> ThreadConfigSnapshot {
@@ -1317,6 +1456,46 @@ pub(crate) struct SessionSettingsUpdate {
 pub(crate) struct AppServerClientMetadata {
     pub(crate) client_name: Option<String>,
     pub(crate) client_version: Option<String>,
+}
+
+fn resolve_open_brain_runtime(
+    config: &Config,
+    conversation_id: ThreadId,
+) -> (ContextEngine, Option<OpenBrainRuntime>, Option<String>) {
+    if config.context_engine != ContextEngine::OpenBrainLcm {
+        return (ContextEngine::Native, None, None);
+    }
+    if !config.lcm.enabled {
+        return (
+            ContextEngine::Native,
+            None,
+            Some("Open Brain LCM is configured but `[lcm].enabled = false`; falling back to native context assembly.".to_string()),
+        );
+    }
+
+    let rollout_id = format!("rollout-{conversation_id}");
+    match OpenBrainRuntime::from_env(
+        &config.open_brain,
+        &config.lcm,
+        conversation_id.to_string(),
+        conversation_id.to_string(),
+        rollout_id,
+        config.cwd.as_path(),
+    ) {
+        Ok(runtime) => (ContextEngine::OpenBrainLcm, Some(runtime), None),
+        Err(OpenBrainRuntimeError::Disabled) => (
+            ContextEngine::Native,
+            None,
+            Some("Open Brain LCM is selected but `[open_brain].enabled = false`; falling back to native context assembly.".to_string()),
+        ),
+        Err(err) => (
+            ContextEngine::Native,
+            None,
+            Some(format!(
+                "Open Brain LCM is selected but unavailable ({err}); falling back to native context assembly."
+            )),
+        ),
+    }
 }
 
 impl Session {
@@ -1623,7 +1802,7 @@ impl Session {
     #[instrument(name = "session_init", level = "info", skip_all)]
     #[allow(clippy::too_many_arguments)]
     async fn new(
-        mut session_configuration: SessionConfiguration,
+        session_configuration: SessionConfiguration,
         config: Arc<Config>,
         auth_manager: Arc<AuthManager>,
         models_manager: Arc<ModelsManager>,
@@ -1777,6 +1956,19 @@ impl Session {
             .map(|rec| rec.rollout_path().to_path_buf());
 
         let mut post_session_configured_events = Vec::<Event>::new();
+        let (context_engine, open_brain_runtime, open_brain_warning) =
+            resolve_open_brain_runtime(config.as_ref(), conversation_id);
+        if let Some(message) = open_brain_warning {
+            post_session_configured_events.push(Event {
+                id: INITIAL_SUBMIT_ID.to_owned(),
+                msg: EventMsg::Warning(WarningEvent { message }),
+            });
+        }
+        let mut session_configuration = SessionConfiguration {
+            context_engine,
+            open_brain_runtime,
+            ..session_configuration
+        };
 
         for usage in config.features.legacy_feature_usages() {
             post_session_configured_events.push(Event {
@@ -2127,6 +2319,8 @@ impl Session {
                 thread_name: session_configuration.thread_name.clone(),
                 model: session_configuration.collaboration_mode.model().to_string(),
                 model_provider_id: config.model_provider_id.clone(),
+                context_engine: Some(session_configuration.context_engine),
+                open_brain: session_configuration.open_brain_session_metadata(),
                 service_tier: session_configuration.service_tier,
                 approval_policy: session_configuration.approval_policy.value(),
                 approvals_reviewer: session_configuration.approvals_reviewer,
@@ -2235,6 +2429,9 @@ impl Session {
 
         // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
         sess.record_initial_history(initial_history).await;
+        if let Err(err) = handlers::persist_context_engine_metadata(&sess).await {
+            warn!("failed to persist context engine metadata to rollout: {err}");
+        }
         {
             let mut state = sess.state.lock().await;
             state.set_pending_session_start_source(Some(session_start_source));
@@ -3604,6 +3801,20 @@ impl Session {
     ) {
         self.record_into_history(items, turn_context).await;
         self.persist_rollout_response_items(items).await;
+        if let Some(runtime) = self.open_brain_runtime().await
+            && let Err(err) = runtime
+                .append_response_items(&turn_context.sub_id, items)
+                .await
+        {
+            warn!("failed to sync rollout items to Open Brain: {err}");
+            if self.should_emit_open_brain_warning().await {
+                self.notify_background_event(
+                    turn_context,
+                    "Open Brain sync is unavailable for this session. Codex will continue locally.",
+                )
+                .await;
+            }
+        }
         self.send_raw_response_items(turn_context, items).await;
     }
 
@@ -3747,6 +3958,7 @@ impl Session {
             collaboration_mode,
             base_instructions,
             session_source,
+            context_engine,
         ) = {
             let state = self.state.lock().await;
             (
@@ -3755,8 +3967,15 @@ impl Session {
                 state.session_configuration.collaboration_mode.clone(),
                 state.session_configuration.base_instructions.clone(),
                 state.session_configuration.session_source.clone(),
+                state.session_configuration.context_engine,
             )
         };
+        if context_engine == ContextEngine::OpenBrainLcm {
+            developer_sections.push(
+                "<context_engine>\nengine = open_brain_lcm\nstatus = active\n</context_engine>"
+                    .to_string(),
+            );
+        }
         if let Some(model_switch_message) =
             crate::context_manager::updates::build_model_instructions_update_item(
                 previous_turn_settings.as_ref(),
@@ -3936,6 +4155,43 @@ impl Session {
     pub(crate) async fn reference_context_item(&self) -> Option<TurnContextItem> {
         let state = self.state.lock().await;
         state.reference_context_item()
+    }
+
+    pub(crate) async fn context_engine(&self) -> ContextEngine {
+        let state = self.state.lock().await;
+        state.session_configuration.context_engine
+    }
+
+    pub(crate) async fn open_brain_runtime(&self) -> Option<OpenBrainRuntime> {
+        let state = self.state.lock().await;
+        state.session_configuration.open_brain_runtime.clone()
+    }
+
+    pub(crate) async fn open_brain_session_metadata(&self) -> Option<OpenBrainSessionMetadata> {
+        let state = self.state.lock().await;
+        state
+            .session_configuration
+            .open_brain_session_metadata()
+            .map(|mut metadata| {
+                metadata.last_context_packet_id = state.last_context_packet_id();
+                metadata
+            })
+    }
+
+    pub(crate) async fn set_last_context_packet_id(&self, packet_id: Option<String>) {
+        let mut state = self.state.lock().await;
+        state.set_last_context_packet_id(packet_id);
+    }
+
+    pub(crate) async fn persist_open_brain_packet_metadata(self: &Arc<Self>, packet_id: String) {
+        if let Err(err) = handlers::persist_open_brain_packet_update(self, packet_id).await {
+            warn!("failed to persist Open Brain packet metadata to rollout: {err}");
+        }
+    }
+
+    pub(crate) async fn should_emit_open_brain_warning(&self) -> bool {
+        let mut state = self.state.lock().await;
+        state.mark_open_brain_warning_emitted()
     }
 
     /// Persist the latest turn context snapshot for the first real user turn and for
@@ -4939,6 +5195,7 @@ mod handlers {
     use codex_protocol::protocol::ReviewDecision;
     use codex_protocol::protocol::ReviewRequest;
     use codex_protocol::protocol::RolloutItem;
+    use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SkillErrorInfo;
     use codex_protocol::protocol::SkillsListEntry;
     use codex_protocol::protocol::ThreadMemoryMode;
@@ -5686,16 +5943,19 @@ mod handlers {
         Ok(msg)
     }
 
-    pub(super) async fn persist_thread_memory_mode_update(
+    async fn persist_session_meta_update<F>(
         sess: &Arc<Session>,
-        mode: ThreadMemoryMode,
-    ) -> anyhow::Result<()> {
+        mut update: F,
+    ) -> anyhow::Result<()>
+    where
+        F: FnMut(&mut SessionMeta),
+    {
         let recorder = {
             let guard = sess.services.rollout.lock().await;
             guard.clone()
         }
         .ok_or_else(|| {
-            anyhow::anyhow!("Session persistence is disabled; cannot update thread memory mode.")
+            anyhow::anyhow!("Session persistence is disabled; cannot update session metadata.")
         })?;
         recorder.persist().await?;
         recorder.flush().await?;
@@ -5709,18 +5969,53 @@ mod handlers {
                 session_meta.meta.id
             );
         }
-        session_meta.meta.memory_mode = Some(
-            match mode {
-                ThreadMemoryMode::Enabled => "enabled",
-                ThreadMemoryMode::Disabled => "disabled",
-            }
-            .to_string(),
-        );
+
+        update(&mut session_meta.meta);
 
         let item = RolloutItem::SessionMeta(session_meta);
         recorder.record_items(std::slice::from_ref(&item)).await?;
         recorder.flush().await?;
         Ok(())
+    }
+
+    pub(super) async fn persist_thread_memory_mode_update(
+        sess: &Arc<Session>,
+        mode: ThreadMemoryMode,
+    ) -> anyhow::Result<()> {
+        persist_session_meta_update(sess, |meta| {
+            meta.memory_mode = Some(
+                match mode {
+                    ThreadMemoryMode::Enabled => "enabled",
+                    ThreadMemoryMode::Disabled => "disabled",
+                }
+                .to_string(),
+            );
+        })
+        .await
+    }
+
+    pub(super) async fn persist_context_engine_metadata(sess: &Arc<Session>) -> anyhow::Result<()> {
+        let context_engine = sess.context_engine().await;
+        let open_brain = sess.open_brain_session_metadata().await;
+        persist_session_meta_update(sess, |meta| {
+            meta.context_engine = Some(context_engine);
+            meta.open_brain = open_brain.clone();
+        })
+        .await
+    }
+
+    pub(super) async fn persist_open_brain_packet_update(
+        sess: &Arc<Session>,
+        packet_id: String,
+    ) -> anyhow::Result<()> {
+        sess.set_last_context_packet_id(Some(packet_id)).await;
+        let context_engine = sess.context_engine().await;
+        let open_brain = sess.open_brain_session_metadata().await;
+        persist_session_meta_update(sess, |meta| {
+            meta.context_engine = Some(context_engine);
+            meta.open_brain = open_brain.clone();
+        })
+        .await
     }
 
     /// Persists the thread name in the rollout and state database, updates in-memory state, and
@@ -6717,6 +7012,28 @@ async fn run_auto_compact(
     reason: CompactionReason,
     phase: CompactionPhase,
 ) -> CodexResult<()> {
+    if sess.context_engine().await == ContextEngine::OpenBrainLcm {
+        if let Err(err) = crate::compact_lcm::run_inline_lcm_auto_compact_task(
+            Arc::clone(sess),
+            Arc::clone(turn_context),
+            initial_context_injection,
+        )
+        .await
+        {
+            warn!("Open Brain LCM auto-compaction failed: {err}");
+            if sess.should_emit_open_brain_warning().await {
+                sess.notify_background_event(
+                    turn_context.as_ref(),
+                    format!(
+                        "Open Brain LCM auto-compaction failed ({err}); falling back to native compaction."
+                    ),
+                )
+                .await;
+            }
+        } else {
+            return Ok(());
+        }
+    }
     if should_use_remote_compact_task(&turn_context.provider) {
         run_inline_remote_auto_compact_task(
             Arc::clone(sess),

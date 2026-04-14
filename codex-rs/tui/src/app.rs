@@ -4,6 +4,7 @@ use crate::app_command::AppCommandView;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
 use crate::app_event::FeedbackCategory;
+use crate::app_event::LcmCommand;
 use crate::app_event::RateLimitRefreshOrigin;
 use crate::app_event::RealtimeAudioDeviceKind;
 #[cfg(target_os = "windows")]
@@ -491,6 +492,106 @@ fn emit_system_bwrap_warning(app_event_tx: &AppEventSender, config: &Config) {
     app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
         history_cell::new_warning_event(message),
     )));
+}
+
+fn lcm_json_str<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
+}
+
+fn lcm_json_usize(value: &serde_json::Value, keys: &[&str]) -> Option<usize> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(serde_json::Value::as_u64))
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn lcm_preview_text(raw: &str, max_len: usize) -> String {
+    let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max_len {
+        compact
+    } else {
+        let preview = compact
+            .chars()
+            .take(max_len.saturating_sub(1))
+            .collect::<String>();
+        format!("{preview}…")
+    }
+}
+
+fn lcm_node_kind(node: &serde_json::Value) -> String {
+    lcm_json_str(node, &["kind", "node_kind"])
+        .unwrap_or("node")
+        .to_string()
+}
+
+fn lcm_node_id(node: &serde_json::Value) -> String {
+    lcm_json_str(node, &["id", "node_id"])
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn lcm_node_title(node: &serde_json::Value) -> String {
+    let title = lcm_json_str(
+        node,
+        &[
+            "title",
+            "label",
+            "name",
+            "content",
+            "content_text",
+            "summary",
+            "description",
+        ],
+    )
+    .unwrap_or("untitled");
+    lcm_preview_text(title, 72)
+}
+
+fn lcm_node_summary(node: &serde_json::Value) -> String {
+    let kind = lcm_node_kind(node);
+    let id = lcm_node_id(node);
+    let depth = lcm_json_usize(node, &["depth"])
+        .map(|depth| format!(" d{depth}"))
+        .unwrap_or_default();
+    let src_tok = lcm_json_usize(node, &["srcTok", "src_tok"])
+        .map(|value| format!(" src={value}"))
+        .unwrap_or_default();
+    let desc_tok = lcm_json_usize(node, &["descTok", "desc_tok"])
+        .map(|value| format!(" desc={value}"))
+        .unwrap_or_default();
+    format!(
+        "{kind}{depth}{src_tok}{desc_tok} {} {}",
+        lcm_preview_text(&id, 12),
+        lcm_node_title(node)
+    )
+}
+
+fn lcm_packet_summary(packet: &serde_json::Value) -> String {
+    let packet_id = lcm_json_str(packet, &["packetId", "packet_id"])
+        .unwrap_or("packet")
+        .to_string();
+    let token_budget = lcm_json_usize(packet, &["tokenBudget", "token_budget"])
+        .map(|value| format!("{value} tok"))
+        .unwrap_or_else(|| "unknown tok".to_string());
+    let item_count = packet
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| items.len())
+        .unwrap_or_default();
+    let query = lcm_json_str(packet, &["query", "source_query"])
+        .map(|value| format!(" query={}", lcm_preview_text(value, 32)))
+        .unwrap_or_default();
+    format!(
+        "{} {token_budget} items={item_count}{query}",
+        lcm_preview_text(&packet_id, 12)
+    )
+}
+
+fn lcm_history_cell(title: &str, lines: Vec<String>) -> history_cell::PlainHistoryCell {
+    let mut rendered = Vec::with_capacity(lines.len() + 1);
+    rendered.push(Line::from(title.to_string()));
+    rendered.extend(lines.into_iter().map(Line::from));
+    history_cell::PlainHistoryCell::new(rendered)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1699,6 +1800,261 @@ impl App {
     /// recently began switching.
     fn current_displayed_thread_id(&self) -> Option<ThreadId> {
         self.active_thread_id.or(self.chat_widget.thread_id())
+    }
+
+    async fn run_lcm_command(
+        &mut self,
+        app_server: &mut AppServerSession,
+        command: LcmCommand,
+    ) -> Result<()> {
+        let Some(thread_id) = self.current_displayed_thread_id() else {
+            self.chat_widget.add_info_message(
+                "No active thread to inspect.".to_string(),
+                /*hint*/ None,
+            );
+            return Ok(());
+        };
+
+        let thread = app_server
+            .thread_read(thread_id, /*include_turns*/ false)
+            .await
+            .wrap_err("failed to read active thread for LCM inspection")?;
+        let engine = thread
+            .context_engine
+            .map(|engine| match engine {
+                codex_app_server_protocol::ContextEngine::Native => "native",
+                codex_app_server_protocol::ContextEngine::OpenBrainLcm => "open_brain_lcm",
+            })
+            .unwrap_or("unknown");
+
+        let cell = match command {
+            LcmCommand::Overview => {
+                let graph = app_server
+                    .thread_context_graph(thread_id, /*include_superseded*/ false, Some(64))
+                    .await
+                    .wrap_err("failed to load LCM graph")?;
+                let packets = app_server
+                    .thread_context_packet(
+                        thread_id, /*query*/ None, /*token_budget*/ None,
+                    )
+                    .await
+                    .wrap_err("failed to load LCM context packets")?;
+                let mut lines = vec![
+                    format!("thread: {}", thread.id),
+                    format!("engine: {engine}"),
+                ];
+                if let Some(session_id) = thread.open_brain_session_id.as_deref() {
+                    lines.push(format!("open brain session: {session_id}"));
+                }
+                if let Some(packet_id) = thread.last_context_packet_id.as_deref() {
+                    lines.push(format!("last context packet: {packet_id}"));
+                }
+                if let Some(status) = graph.graph.get("status") {
+                    let fresh_tail_count =
+                        lcm_json_usize(status, &["freshTailCount", "fresh_tail_count"])
+                            .unwrap_or_default();
+                    let packet_count = lcm_json_usize(status, &["packetCount", "packet_count"])
+                        .unwrap_or_default();
+                    lines.push(format!("fresh tail: {fresh_tail_count} items"));
+                    lines.push(format!("context packets: {packet_count}"));
+                    if let Some(latest_packet_id) =
+                        lcm_json_str(status, &["latestPacketId", "latest_packet_id"])
+                    {
+                        lines.push(format!("latest packet id: {latest_packet_id}"));
+                    }
+                }
+                let fresh_tail = graph
+                    .graph
+                    .get("freshTail")
+                    .or_else(|| graph.graph.get("fresh_tail"))
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                if !fresh_tail.is_empty() {
+                    lines.push("fresh tail lane:".to_string());
+                    lines.extend(
+                        fresh_tail
+                            .iter()
+                            .take(4)
+                            .map(|node| format!("  - {}", lcm_node_summary(node))),
+                    );
+                }
+                let packet_items = packets
+                    .packets
+                    .unwrap_or_default()
+                    .into_iter()
+                    .take(3)
+                    .map(|packet| format!("  - {}", lcm_packet_summary(&packet)))
+                    .collect::<Vec<_>>();
+                if !packet_items.is_empty() {
+                    lines.push("recent packets:".to_string());
+                    lines.extend(packet_items);
+                }
+                lcm_history_cell("LCM Overview", lines)
+            }
+            LcmCommand::Graph => {
+                let graph = app_server
+                    .thread_context_graph(thread_id, /*include_superseded*/ false, Some(96))
+                    .await
+                    .wrap_err("failed to load LCM graph")?;
+                let nodes = graph
+                    .graph
+                    .get("nodes")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut grouped = BTreeMap::<String, Vec<String>>::new();
+                for node in nodes.iter().take(32) {
+                    let depth = lcm_json_usize(node, &["depth"])
+                        .map(|depth| format!("depth {depth}"))
+                        .unwrap_or_else(|| "depth raw".to_string());
+                    grouped
+                        .entry(depth)
+                        .or_default()
+                        .push(format!("  - {}", lcm_node_summary(node)));
+                }
+                let mut lines = vec![
+                    format!("thread: {}", thread.id),
+                    format!("engine: {engine}"),
+                ];
+                let fresh_tail = graph
+                    .graph
+                    .get("freshTail")
+                    .or_else(|| graph.graph.get("fresh_tail"))
+                    .and_then(serde_json::Value::as_array)
+                    .map(|items| items.len())
+                    .unwrap_or_default();
+                lines.push(format!("fresh tail lane: {fresh_tail} items"));
+                for (depth, entries) in grouped {
+                    lines.push(format!("{depth}:"));
+                    lines.extend(entries);
+                }
+                lcm_history_cell("LCM Graph", lines)
+            }
+            LcmCommand::Search(query) => {
+                let response = app_server
+                    .thread_context_search(
+                        thread_id,
+                        query.clone(),
+                        /*include_superseded*/ false,
+                        Some(12),
+                    )
+                    .await
+                    .wrap_err("failed to search LCM graph")?;
+                let results = response
+                    .results
+                    .get("results")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut lines = vec![format!("thread: {}", thread.id), format!("query: {query}")];
+                if results.is_empty() {
+                    lines.push("no matching nodes".to_string());
+                } else {
+                    lines.extend(
+                        results
+                            .iter()
+                            .map(|node| format!("  - {}", lcm_node_summary(node))),
+                    );
+                }
+                lcm_history_cell("LCM Search", lines)
+            }
+            LcmCommand::Expand(node_id) => {
+                let expansion = app_server
+                    .thread_context_expand(
+                        thread_id,
+                        Some(node_id.clone()),
+                        /*query*/ None,
+                        Some(8),
+                        Some(4000),
+                    )
+                    .await
+                    .wrap_err("failed to expand LCM node")?;
+                let description = app_server
+                    .thread_context_describe(
+                        thread_id,
+                        node_id.clone(),
+                        /*include_superseded*/ false,
+                    )
+                    .await
+                    .wrap_err("failed to describe LCM node")?;
+                let mut lines = vec![format!("thread: {}", thread.id), format!("node: {node_id}")];
+                if let Some(node) = expansion.result.get("node") {
+                    lines.push(format!("focus: {}", lcm_node_summary(node)));
+                }
+                let incoming = expansion
+                    .result
+                    .get("incoming")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|items| items.len())
+                    .unwrap_or_default();
+                let outgoing = expansion
+                    .result
+                    .get("outgoing")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|items| items.len())
+                    .unwrap_or_default();
+                let events = expansion
+                    .result
+                    .get("events")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|items| items.len())
+                    .unwrap_or_default();
+                lines.push(format!("incoming edges: {incoming}"));
+                lines.push(format!("outgoing edges: {outgoing}"));
+                lines.push(format!("source events: {events}"));
+                let linked_thoughts = description
+                    .description
+                    .get("linked_thoughts")
+                    .or_else(|| description.description.get("linkedThoughts"))
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                if !linked_thoughts.is_empty() {
+                    lines.push("linked thoughts:".to_string());
+                    lines.extend(
+                        linked_thoughts
+                            .iter()
+                            .take(6)
+                            .map(|node| format!("  - {}", lcm_node_summary(node))),
+                    );
+                }
+                lcm_history_cell("LCM Expand", lines)
+            }
+            LcmCommand::Thoughts => {
+                let graph = app_server
+                    .thread_context_graph(thread_id, /*include_superseded*/ false, Some(128))
+                    .await
+                    .wrap_err("failed to load LCM graph")?;
+                let thoughts = graph
+                    .graph
+                    .get("nodes")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|node| lcm_node_kind(node) == "durable_memory")
+                    .collect::<Vec<_>>();
+                let mut lines = vec![
+                    format!("thread: {}", thread.id),
+                    format!("engine: {engine}"),
+                ];
+                if thoughts.is_empty() {
+                    lines.push("no durable thoughts promoted yet".to_string());
+                } else {
+                    lines.extend(
+                        thoughts
+                            .iter()
+                            .take(16)
+                            .map(|node| format!("  - {}", lcm_node_summary(node))),
+                    );
+                }
+                lcm_history_cell("LCM Thoughts", lines)
+            }
+        };
+
+        self.chat_widget.add_to_history(cell);
+        Ok(())
     }
 
     fn ignore_same_thread_resume(
@@ -4421,6 +4777,15 @@ impl App {
                     pager_lines,
                     "D I F F".to_string(),
                 ));
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::RunLcmCommand(command) => {
+                if let Err(err) = self.run_lcm_command(app_server, command).await {
+                    self.chat_widget
+                        .add_to_history(history_cell::new_error_event(format!(
+                            "LCM inspector failed: {err}"
+                        )));
+                }
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::OpenAppLink {
@@ -8872,6 +9237,9 @@ guardian_approval = true
                     agent_role: Some("explorer".to_string()),
                     git_info: None,
                     name: Some("agent thread".to_string()),
+                    context_engine: None,
+                    open_brain_session_id: None,
+                    last_context_packet_id: None,
                     turns: Vec::new(),
                 },
             }),
@@ -8953,6 +9321,9 @@ guardian_approval = true
                     agent_role: Some("explorer".to_string()),
                     git_info: None,
                     name: Some("agent thread".to_string()),
+                    context_engine: None,
+                    open_brain_session_id: None,
+                    last_context_packet_id: None,
                     turns: Vec::new(),
                 },
             }),
@@ -9159,6 +9530,8 @@ guardian_approval = true
                 thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
+                context_engine: None,
+                open_brain: None,
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
@@ -10322,6 +10695,8 @@ guardian_approval = true
                 thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
+                context_engine: None,
+                open_brain: None,
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
@@ -10438,6 +10813,8 @@ guardian_approval = true
                 thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
+                context_engine: None,
+                open_brain: None,
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
@@ -10501,6 +10878,8 @@ guardian_approval = true
                 thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
+                context_engine: None,
+                open_brain: None,
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
@@ -10594,6 +10973,8 @@ guardian_approval = true
                 thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
+                context_engine: None,
+                open_brain: None,
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
@@ -10950,6 +11331,9 @@ guardian_approval = true
                     agent_role: None,
                     git_info: None,
                     name: None,
+                    context_engine: None,
+                    open_brain_session_id: None,
+                    last_context_packet_id: None,
                     turns: Vec::new(),
                 },
             },
@@ -10974,6 +11358,8 @@ guardian_approval = true
             thread_name: None,
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
+            context_engine: None,
+            open_brain: None,
             service_tier: None,
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
@@ -11083,6 +11469,8 @@ guardian_approval = true
                 thread_name: Some("keep me".to_string()),
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
+                context_engine: None,
+                open_brain: None,
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,

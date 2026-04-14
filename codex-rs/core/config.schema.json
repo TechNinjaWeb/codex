@@ -621,6 +621,13 @@
       },
       "type": "object"
     },
+    "ContextEngine": {
+      "enum": [
+        "native",
+        "open_brain_lcm"
+      ],
+      "type": "string"
+    },
     "FeatureToml_for_MultiAgentV2ConfigToml": {
       "anyOf": [
         {
@@ -766,6 +773,75 @@
           "type": "string"
         }
       ]
+    },
+    "LcmConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "condensed_min_fanout": {
+          "default": 4,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "condensed_target_tokens": {
+          "default": 2000,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "context_threshold": {
+          "default": 0.75,
+          "format": "double",
+          "type": "number"
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "expansion_model": {
+          "type": "string"
+        },
+        "fresh_tail_count": {
+          "default": 64,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "incremental_max_depth": {
+          "default": 1,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "leaf_chunk_tokens": {
+          "default": 20000,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "leaf_target_tokens": {
+          "default": 1200,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "max_expand_tokens": {
+          "default": 4000,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "new_session_retain_depth": {
+          "default": 2,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "summary_model": {
+          "type": "string"
+        }
+      },
+      "type": "object"
     },
     "MarketplaceConfig": {
       "additionalProperties": false,
@@ -1219,6 +1295,41 @@
           "type": "string"
         }
       ]
+    },
+    "OpenBrainConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "mirror_durable_to_thoughts": {
+          "default": true,
+          "type": "boolean"
+        },
+        "project_scope_strategy": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/OpenBrainProjectScopeStrategy"
+            }
+          ],
+          "default": "git_root_first"
+        },
+        "service_role_key_env": {
+          "type": "string"
+        },
+        "supabase_url_env": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "OpenBrainProjectScopeStrategy": {
+      "enum": [
+        "git_root_first",
+        "workspace_root"
+      ],
+      "type": "string"
     },
     "OtelConfigToml": {
       "additionalProperties": false,
@@ -2138,6 +2249,14 @@
       "description": "Compact prompt used for history compaction.",
       "type": "string"
     },
+    "context_engine": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ContextEngine"
+        }
+      ],
+      "description": "Selects which context engine assembles model-visible history."
+    },
     "default_permissions": {
       "description": "Default named permissions profile to apply from the `[permissions]` table.",
       "type": "string"
@@ -2460,6 +2579,14 @@
       ],
       "description": "Optional absolute path to the Node runtime used by `js_repl`."
     },
+    "lcm": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/LcmConfig"
+        }
+      ],
+      "description": "LCM tuning for `open_brain_lcm`."
+    },
     "log_dir": {
       "allOf": [
         {
@@ -2586,6 +2713,14 @@
         "type": "string"
       },
       "type": "array"
+    },
+    "open_brain": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/OpenBrainConfig"
+        }
+      ],
+      "description": "Open Brain runtime/backend settings."
     },
     "openai_base_url": {
       "description": "Base URL override for the built-in `openai` model provider.",

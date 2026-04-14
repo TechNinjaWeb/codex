@@ -1293,6 +1293,9 @@ mod tests {
             agent_role: None,
             git_info: None,
             name: None,
+            context_engine: None,
+            open_brain_session_id: None,
+            last_context_packet_id: None,
             turns: vec![Turn {
                 id: "turn-1".to_string(),
                 items: vec![ThreadItem::CommandExecution {
@@ -1469,6 +1472,9 @@ mod tests {
                 agent_role: None,
                 git_info: None,
                 name: Some("restore".to_string()),
+                context_engine: None,
+                open_brain_session_id: None,
+                last_context_packet_id: None,
                 turns: vec![
                     Turn {
                         id: "turn-complete".to_string(),

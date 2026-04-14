@@ -15,8 +15,10 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::ContextEngine;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::OpenBrainSessionMetadata;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::Submission;
@@ -99,6 +101,78 @@ impl CodexThread {
     /// Persist whether this thread is eligible for future memory generation.
     pub async fn set_thread_memory_mode(&self, mode: ThreadMemoryMode) -> anyhow::Result<()> {
         self.codex.set_thread_memory_mode(mode).await
+    }
+
+    pub async fn set_context_engine(&self, engine: ContextEngine) -> anyhow::Result<ContextEngine> {
+        self.codex.set_context_engine(engine).await
+    }
+
+    pub async fn context_graph(
+        &self,
+        include_superseded: bool,
+        limit: usize,
+    ) -> anyhow::Result<codex_open_brain::OpenBrainGraphView> {
+        self.codex.context_graph(include_superseded, limit).await
+    }
+
+    pub async fn context_describe(
+        &self,
+        node_id: &str,
+        include_superseded: bool,
+    ) -> anyhow::Result<codex_open_brain::OpenBrainNodeDescription> {
+        self.codex
+            .context_describe(node_id, include_superseded)
+            .await
+    }
+
+    pub async fn context_search(
+        &self,
+        query: &str,
+        include_superseded: bool,
+        limit: usize,
+    ) -> anyhow::Result<codex_open_brain::OpenBrainSearchResults> {
+        self.codex
+            .context_search(query, include_superseded, limit)
+            .await
+    }
+
+    pub async fn context_expand(
+        &self,
+        node_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<codex_open_brain::OpenBrainExpansion> {
+        self.codex.context_expand(node_id, limit).await
+    }
+
+    pub async fn context_expand_query(
+        &self,
+        query: &str,
+        limit: usize,
+        token_budget: usize,
+    ) -> anyhow::Result<codex_open_brain::OpenBrainExpandQueryResults> {
+        self.codex
+            .context_expand_query(query, limit, token_budget)
+            .await
+    }
+
+    pub async fn context_packet(
+        &self,
+        query: Option<&str>,
+        token_budget: usize,
+    ) -> anyhow::Result<codex_open_brain::ContextPacket> {
+        self.codex.context_packet(query, token_budget).await
+    }
+
+    pub async fn context_packets(&self, limit: usize) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.codex.context_packets(limit).await
+    }
+
+    pub async fn context_engine(&self) -> ContextEngine {
+        self.codex.context_engine().await
+    }
+
+    pub async fn open_brain_session_metadata(&self) -> Option<OpenBrainSessionMetadata> {
+        self.codex.open_brain_session_metadata().await
     }
 
     pub async fn steer_input(

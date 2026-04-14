@@ -49,6 +49,7 @@ pub enum SlashCommand {
     Exit,
     Feedback,
     Rollout,
+    Lcm,
     Ps,
     #[strum(to_string = "stop", serialize = "clean")]
     Stop,
@@ -114,6 +115,7 @@ impl SlashCommand {
             SlashCommand::Plugins => "browse plugins",
             SlashCommand::Logout => "log out of Codex",
             SlashCommand::Rollout => "print the rollout file path",
+            SlashCommand::Lcm => "inspect the Open Brain LCM graph and packet state",
             SlashCommand::TestApproval => "test approval request",
         }
     }
@@ -134,6 +136,7 @@ impl SlashCommand {
                 | SlashCommand::Fast
                 | SlashCommand::Resume
                 | SlashCommand::SandboxReadRoot
+                | SlashCommand::Lcm
         )
     }
 
@@ -172,6 +175,7 @@ impl SlashCommand {
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins
+            | SlashCommand::Lcm
             | SlashCommand::Feedback
             | SlashCommand::Quit
             | SlashCommand::Exit => true,

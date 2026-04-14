@@ -58,6 +58,8 @@ async fn extract_metadata_from_rollout_uses_session_meta() {
         base_instructions: None,
         dynamic_tools: None,
         memory_mode: None,
+        context_engine: None,
+        open_brain: None,
     };
     let session_meta_line = SessionMetaLine {
         meta: session_meta,
@@ -109,6 +111,8 @@ async fn extract_metadata_from_rollout_returns_latest_memory_mode() {
         base_instructions: None,
         dynamic_tools: None,
         memory_mode: None,
+        context_engine: None,
+        open_brain: None,
     };
     let polluted_meta = SessionMeta {
         memory_mode: Some("polluted".to_string()),
@@ -157,6 +161,12 @@ fn builder_from_items_falls_back_to_filename() {
     let items = vec![RolloutItem::Compacted(CompactedItem {
         message: "noop".to_string(),
         replacement_history: None,
+        summary_node_id: None,
+        span_id: None,
+        depth: None,
+        src_tok: None,
+        desc_tok: None,
+        fresh_tail_count: None,
     })];
 
     let builder = builder_from_items(items.as_slice(), path.as_path()).expect("builder");
@@ -371,6 +381,8 @@ fn write_rollout_in_sessions_with_cwd(
         base_instructions: None,
         dynamic_tools: None,
         memory_mode: None,
+        context_engine: None,
+        open_brain: None,
     };
     let session_meta_line = SessionMetaLine {
         meta: session_meta,

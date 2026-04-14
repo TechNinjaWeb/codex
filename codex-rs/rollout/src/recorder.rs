@@ -487,6 +487,8 @@ impl RolloutRecorder {
                         },
                         memory_mode: (!config.generate_memories())
                             .then_some("disabled".to_string()),
+                        context_engine: None,
+                        open_brain: None,
                     };
 
                     (
