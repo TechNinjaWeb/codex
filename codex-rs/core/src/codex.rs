@@ -2437,11 +2437,15 @@ impl Session {
             state.set_pending_session_start_source(Some(session_start_source));
         }
 
-        memories::start_memories_startup_task(
-            &sess,
-            Arc::clone(&config),
-            &session_configuration.session_source,
-        );
+        // LCM threads own durable memory in Open Brain instead of relying on the
+        // legacy startup memories pipeline.
+        if session_configuration.context_engine != ContextEngine::OpenBrainLcm {
+            memories::start_memories_startup_task(
+                &sess,
+                Arc::clone(&config),
+                &session_configuration.session_source,
+            );
+        }
 
         Ok(sess)
     }
@@ -4015,6 +4019,7 @@ impl Session {
         // Add developer instructions for memories.
         if turn_context.features.enabled(Feature::MemoryTool)
             && turn_context.config.memories.use_memories
+            && self.context_engine().await != ContextEngine::OpenBrainLcm
             && let Some(memory_prompt) =
                 build_memory_tool_developer_instructions(&turn_context.config.codex_home).await
         {
@@ -6423,8 +6428,7 @@ pub(crate) async fn run_turn(
         return None;
     }
 
-    let model_info = turn_context.model_info.clone();
-    let auto_compact_limit = model_info.auto_compact_token_limit().unwrap_or(i64::MAX);
+    let auto_compact_limit = effective_auto_compact_limit(&sess, &turn_context).await;
     let mut prewarmed_client_session = prewarmed_client_session;
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
     // new user message are recorded. Estimate pending incoming items (context
@@ -6927,6 +6931,29 @@ pub(crate) async fn run_turn(
     last_agent_message
 }
 
+async fn effective_auto_compact_limit(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) -> i64 {
+    let provider_limit = turn_context
+        .model_info
+        .auto_compact_token_limit()
+        .unwrap_or(i64::MAX);
+    if sess.context_engine().await != ContextEngine::OpenBrainLcm {
+        return provider_limit;
+    }
+
+    // LCM uses its own pressure threshold; provider auto-compact remains an upper
+    // bound so fallback/native behavior can still clamp more aggressively.
+    let threshold_limit = turn_context.model_context_window().map(|context_window| {
+        ((context_window as f64) * turn_context.config.lcm.context_threshold)
+            .round()
+            .max(256.0) as i64
+    });
+
+    match threshold_limit {
+        Some(limit) => limit.min(provider_limit),
+        None => provider_limit,
+    }
+}
+
 async fn run_pre_sampling_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
@@ -6939,10 +6966,7 @@ async fn run_pre_sampling_compact(
     )
     .await?;
     let total_usage_tokens = sess.get_total_token_usage().await;
-    let auto_compact_limit = turn_context
-        .model_info
-        .auto_compact_token_limit()
-        .unwrap_or(i64::MAX);
+    let auto_compact_limit = effective_auto_compact_limit(sess, turn_context).await;
     // Compact if the total usage tokens are greater than the auto compact limit
     if total_usage_tokens >= auto_compact_limit {
         run_auto_compact(
@@ -6984,10 +7008,7 @@ async fn maybe_run_previous_model_inline_compact(
     let Some(new_context_window) = turn_context.model_context_window() else {
         return Ok(false);
     };
-    let new_auto_compact_limit = turn_context
-        .model_info
-        .auto_compact_token_limit()
-        .unwrap_or(i64::MAX);
+    let new_auto_compact_limit = effective_auto_compact_limit(sess, turn_context).await;
     let should_run = total_usage_tokens > new_auto_compact_limit
         && previous_model_turn_context.model_info.slug != turn_context.model_info.slug
         && old_context_window > new_context_window;

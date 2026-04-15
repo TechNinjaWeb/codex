@@ -638,9 +638,10 @@ fn footer_from_props_lines(
 
 /// Returns the contextual footer row when the footer is not busy showing an instructional hint.
 ///
-/// The returned line may contain the configured status line, the currently viewed agent label, or
-/// both combined. Active instructional states such as quit reminders, shortcut overlays, and queue
-/// prompts deliberately return `None` so those call-to-action hints stay visible.
+/// The returned line may contain the configured status line, the context-pressure meter, the
+/// currently viewed agent label, or any combination of those values. Active instructional states
+/// such as quit reminders, shortcut overlays, and queue prompts deliberately return `None` so
+/// those call-to-action hints stay visible.
 pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'static>> {
     if !shows_passive_footer_line(props) {
         return None;
@@ -651,6 +652,22 @@ pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'st
     } else {
         None
     };
+
+    let context_line = context_window_line(
+        props.context_window_percent,
+        props.context_window_used_tokens,
+    );
+    let context_visible = props.status_line_enabled
+        && (props.context_window_percent.is_some() || props.context_window_used_tokens.is_some());
+
+    if context_visible {
+        if let Some(existing) = line.as_mut() {
+            existing.spans.push(" · ".into());
+            existing.spans.extend(context_line.spans);
+        } else {
+            line = Some(context_line);
+        }
+    }
 
     if let Some(active_agent_label) = props.active_agent_label.as_ref() {
         if let Some(existing) = line.as_mut() {
@@ -1692,6 +1709,28 @@ mod tests {
         };
 
         snapshot_footer("footer_status_line_with_active_agent_label", props);
+
+        let props = FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: true,
+            collaboration_modes_enabled: true,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            context_window_percent: Some(50),
+            context_window_used_tokens: None,
+            status_line_value: Some(Line::from("Status line content".to_string())),
+            status_line_enabled: true,
+            active_agent_label: Some("Robie [explorer]".to_string()),
+        };
+
+        snapshot_footer_with_mode_indicator(
+            "footer_status_line_keeps_context_pressure",
+            /*width*/ 120,
+            &props,
+            Some(CollaborationModeIndicator::Plan),
+        );
     }
 
     #[test]

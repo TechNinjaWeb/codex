@@ -17,7 +17,6 @@ use reqwest::header::AUTHORIZATION;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
-use serde::Serialize;
 use serde_json::Value;
 use serial_test::serial;
 use std::process::Command;
@@ -105,28 +104,6 @@ async fn rest_rows(
         .await?
         .error_for_status()?;
     Ok(response.json::<Vec<Value>>().await?)
-}
-
-async fn rpc_json<T, P>(
-    client: &reqwest::Client,
-    base_url: &str,
-    service_role_key: &str,
-    name: &str,
-    payload: &P,
-) -> Result<T>
-where
-    T: serde::de::DeserializeOwned,
-    P: Serialize + ?Sized,
-{
-    let url = format!("{}/rest/v1/rpc/{name}", base_url.trim_end_matches('/'));
-    let response = client
-        .post(url)
-        .headers(auth_headers(service_role_key))
-        .json(payload)
-        .send()
-        .await?
-        .error_for_status()?;
-    Ok(response.json::<T>().await?)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -318,32 +295,6 @@ async fn live_open_brain_lcm_auto_compaction_writes_graph_artifacts() -> Result<
         "expected the compaction span to cover at least one compacted source item"
     );
 
-    let promotion_result: Value = rpc_json(
-        &client,
-        &supabase_url,
-        &service_role_key,
-        "ob_promote_durable_memory",
-        &serde_json::json!({
-            "p_session_id": session_id.clone(),
-            "p_records": [{
-                "title": "LCM smoke durable memory",
-                "content": "The live Open Brain LCM smoke session compacted into a persisted context packet.",
-                "type": "reference",
-                "memory_type": "session_fact",
-                "topics": ["lcm", "smoke"],
-                "source_node_ids": [summary_node_id.clone()],
-                "source_event_ids": ["message-0"],
-                "mirror_to_thoughts": true,
-            }],
-        }),
-    )
-    .await?;
-    assert_eq!(
-        promotion_result["inserted_count"].as_u64(),
-        Some(1),
-        "expected one durable memory promotion record"
-    );
-
     let durable_rows = rest_rows(
         &client,
         &supabase_url,
@@ -359,8 +310,14 @@ async fn live_open_brain_lcm_auto_compaction_writes_graph_artifacts() -> Result<
         ],
     )
     .await?;
-    assert_eq!(durable_rows.len(), 1, "expected one durable memory node");
-    let durable_node = &durable_rows[0];
+    assert!(
+        !durable_rows.is_empty(),
+        "expected at least one durable memory node"
+    );
+    let durable_node = durable_rows
+        .iter()
+        .find(|row| row["metadata"]["summary_node_id"].as_str() == Some(summary_node_id.as_str()))
+        .unwrap_or(&durable_rows[0]);
     let durable_node_id = durable_node["node_id"]
         .as_str()
         .expect("durable memory node id")
@@ -397,7 +354,7 @@ async fn live_open_brain_lcm_auto_compaction_writes_graph_artifacts() -> Result<
             row["relationship_type"] == "PROMOTES_TO"
                 && row["to_node_id"].as_str() == Some(summary_node_id.as_str())
         }),
-        "expected durable memory promotion to retain lineage to its source summary node"
+        "expected live durable-memory promotion to retain lineage to its source summary node"
     );
 
     let thought_rows = rest_rows(

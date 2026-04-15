@@ -467,6 +467,7 @@ impl OpenBrainRpcClient {
 pub struct OpenBrainRuntime {
     client: OpenBrainRpcClient,
     lcm: LcmConfig,
+    mirror_durable_to_thoughts: bool,
     session_id: String,
     thread_id: String,
     rollout_id: String,
@@ -506,6 +507,7 @@ impl OpenBrainRuntime {
                 service_role_key,
             }),
             lcm: lcm.clone(),
+            mirror_durable_to_thoughts: config.mirror_durable_to_thoughts,
             thread_id: thread_id.into(),
             rollout_id: rollout_id.into(),
             scope_key: project_key.clone(),
@@ -532,6 +534,10 @@ impl OpenBrainRuntime {
 
     pub fn lcm(&self) -> &LcmConfig {
         &self.lcm
+    }
+
+    pub fn mirror_durable_to_thoughts(&self) -> bool {
+        self.mirror_durable_to_thoughts
     }
 
     pub fn context_token_budget(&self, model_context_window: Option<i64>) -> usize {
@@ -695,14 +701,27 @@ impl OpenBrainRuntime {
         &self,
         limit: usize,
     ) -> Result<Vec<JsonValue>, OpenBrainClientError> {
-        let query = [
-            ("select", "node_id,session_id,thread_id,project_key,scope_key,node_type,node_kind,title,content,metadata,provenance,status,created_at,updated_at".to_string()),
-            ("thread_id", format!("eq.{}", self.thread_id)),
-            ("node_kind", "eq.context_packet".to_string()),
-            ("order", "created_at.desc".to_string()),
-            ("limit", limit.max(1).to_string()),
-        ];
-        self.client.rest_get_json("ob_nodes", &query).await
+        let graph = self
+            .graph_view(/*include_superseded*/ false, limit.max(16))
+            .await?;
+        Ok(graph
+            .context_packets
+            .into_iter()
+            .take(limit.max(1))
+            .collect())
+    }
+
+    pub async fn promote_durable_memory(
+        &self,
+        records: &[OpenBrainDurableMemoryRecord],
+    ) -> Result<OpenBrainPromotionResult, OpenBrainClientError> {
+        let payload = serde_json::json!({
+            "p_session_id": self.session_id,
+            "p_records": records,
+        });
+        self.client
+            .rpc_json("ob_promote_durable_memory", &payload)
+            .await
     }
 
     fn to_sync_records(
@@ -758,6 +777,30 @@ fn derive_project_key(cwd: &Path, strategy: OpenBrainProjectScopeStrategy) -> St
 
 fn discover_git_root(start: &Path) -> Option<&Path> {
     start.ancestors().find(|path| path.join(".git").exists())
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct OpenBrainDurableMemoryRecord {
+    pub title: String,
+    pub content: String,
+    pub memory_type: String,
+    #[serde(default)]
+    pub source_node_ids: Vec<String>,
+    #[serde(default)]
+    pub source_event_ids: Vec<String>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub mirror_to_thoughts: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct OpenBrainPromotionResult {
+    pub session_id: String,
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_key: Option<String>,
+    pub inserted_count: usize,
 }
 
 fn json_object(

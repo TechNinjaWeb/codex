@@ -567,23 +567,83 @@ fn lcm_node_summary(node: &serde_json::Value) -> String {
 }
 
 fn lcm_packet_summary(packet: &serde_json::Value) -> String {
-    let packet_id = lcm_json_str(packet, &["packetId", "packet_id"])
+    let kind = lcm_json_str(packet, &["node_kind", "kind"])
         .unwrap_or("packet")
         .to_string();
+    let id = lcm_json_str(
+        packet,
+        &[
+            "packetId",
+            "packet_id",
+            "packetNodeId",
+            "packet_node_id",
+            "nodeId",
+            "node_id",
+        ],
+    )
+    .unwrap_or("unknown")
+    .to_string();
+    let depth = lcm_json_usize(packet, &["depth"])
+        .map(|depth| format!(" d{depth}"))
+        .unwrap_or_default();
+    let src_tok = lcm_json_usize(packet, &["srcTok", "src_tok"])
+        .map(|value| format!(" src={value}"))
+        .unwrap_or_default();
+    let desc_tok = lcm_json_usize(packet, &["descTok", "desc_tok"])
+        .map(|value| format!(" desc={value}"))
+        .unwrap_or_default();
     let token_budget = lcm_json_usize(packet, &["tokenBudget", "token_budget"])
-        .map(|value| format!("{value} tok"))
-        .unwrap_or_else(|| "unknown tok".to_string());
-    let item_count = packet
-        .get("items")
-        .and_then(serde_json::Value::as_array)
-        .map(|items| items.len())
+        .map(|value| format!(" tok={value}"))
+        .unwrap_or_default();
+    let item_count = lcm_json_usize(packet, &["itemCount", "item_count"])
+        .map(|value| format!(" items={value}"))
         .unwrap_or_default();
     let query = lcm_json_str(packet, &["query", "source_query"])
         .map(|value| format!(" query={}", lcm_preview_text(value, 32)))
         .unwrap_or_default();
+    let title = lcm_node_title(packet);
     format!(
-        "{} {token_budget} items={item_count}{query}",
-        lcm_preview_text(&packet_id, 12)
+        "{kind}{depth}{src_tok}{desc_tok} {}{token_budget}{item_count}{query} {}",
+        lcm_preview_text(&id, 12),
+        lcm_preview_text(&title, 72)
+    )
+}
+
+fn lcm_fresh_tail_summary(event: &serde_json::Value) -> String {
+    let kind = lcm_json_str(event, &["item_kind", "kind", "type"])
+        .unwrap_or("event")
+        .to_string();
+    let id = lcm_json_str(
+        event,
+        &[
+            "item_id",
+            "event_id",
+            "id",
+            "turn_id",
+            "tool_call_id",
+            "linked_tool_call_id",
+        ],
+    )
+    .unwrap_or("unknown")
+    .to_string();
+    let seq = lcm_json_usize(event, &["item_index", "event_sequence"])
+        .map(|value| format!(" #{value}"))
+        .unwrap_or_default();
+    let role = lcm_json_str(event, &["role"])
+        .map(|value| format!(" role={value}"))
+        .unwrap_or_default();
+    let tool_call_id = lcm_json_str(event, &["tool_call_id"])
+        .map(|value| format!(" tool={}", lcm_preview_text(value, 16)))
+        .unwrap_or_default();
+    let linked_tool_call_id = lcm_json_str(event, &["linked_tool_call_id"])
+        .map(|value| format!(" linked={}", lcm_preview_text(value, 16)))
+        .unwrap_or_default();
+    let content = lcm_json_str(event, &["content", "text", "summary"])
+        .map(|value| format!(" {}", lcm_preview_text(value, 64)))
+        .unwrap_or_default();
+    format!(
+        "{kind}{seq} {}{role}{tool_call_id}{linked_tool_call_id}{content}",
+        lcm_preview_text(&id, 12)
     )
 }
 
@@ -1876,7 +1936,7 @@ impl App {
                         fresh_tail
                             .iter()
                             .take(4)
-                            .map(|node| format!("  - {}", lcm_node_summary(node))),
+                            .map(|event| format!("  - {}", lcm_fresh_tail_summary(event))),
                     );
                 }
                 let packet_items = packets
@@ -1887,7 +1947,7 @@ impl App {
                     .map(|packet| format!("  - {}", lcm_packet_summary(&packet)))
                     .collect::<Vec<_>>();
                 if !packet_items.is_empty() {
-                    lines.push("recent packets:".to_string());
+                    lines.push("recent packet summaries:".to_string());
                     lines.extend(packet_items);
                 }
                 lcm_history_cell("LCM Overview", lines)
@@ -7954,6 +8014,63 @@ mod tests {
         assert_eq!(
             app.chat_widget.status_line_text(),
             Some("950K window".into())
+        );
+    }
+
+    #[test]
+    fn lcm_packet_summary_uses_packet_fields_without_items_shape() {
+        let packet = serde_json::json!({
+            "kind": "context_packet",
+            "packet_node_id": "7913d772-4bb9-448e-8d62-20c24800f633",
+            "depth": 0,
+            "src_tok": 107_395,
+            "desc_tok": 1_208,
+            "item_count": 13,
+            "token_budget": 4_000,
+            "query": "frontend dashboard graph packet inspection",
+            "title": "Context packet"
+        });
+
+        let summary = lcm_packet_summary(&packet);
+
+        assert!(summary.contains("context_packet"));
+        assert!(summary.contains("7913d772"));
+        assert!(summary.contains("d0"));
+        assert!(summary.contains("src=107395"));
+        assert!(summary.contains("desc=1208"));
+        assert!(summary.contains("tok=4000"));
+        assert!(summary.contains("items=13"));
+        assert!(summary.contains("frontend dashboard graph"));
+        assert!(
+            !summary.contains("unknown tok"),
+            "packet summary should not depend on a full-packet items array: {summary}"
+        );
+    }
+
+    #[test]
+    fn lcm_fresh_tail_summary_uses_event_fields() {
+        let event = serde_json::json!({
+            "item_kind": "message",
+            "item_id": "evt-019",
+            "item_index": 19,
+            "role": "assistant",
+            "tool_call_id": "tool-call-7",
+            "linked_tool_call_id": "tool-call-6",
+            "content": "Fresh tail items must render like events."
+        });
+
+        let summary = lcm_fresh_tail_summary(&event);
+
+        assert!(summary.contains("message"));
+        assert!(summary.contains("evt-019"));
+        assert!(summary.contains("#19"));
+        assert!(summary.contains("role=assistant"));
+        assert!(summary.contains("tool=tool-call-7"));
+        assert!(summary.contains("linked=tool-call-6"));
+        assert!(summary.contains("Fresh tail items must render"));
+        assert!(
+            !summary.contains("d0"),
+            "fresh tail summary should not use graph-node depth formatting: {summary}"
         );
     }
 

@@ -4,6 +4,7 @@ use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::compact::InitialContextInjection;
 use crate::compact::insert_initial_context_before_last_real_user_or_summary;
+use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::ContextCompactionItem;
@@ -17,6 +18,8 @@ use codex_protocol::user_input::UserInput;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
+
+const MIN_DURABLE_MEMORY_SOURCE_TOKENS: u32 = 20_000;
 
 pub(crate) async fn run_inline_lcm_auto_compact_task(
     sess: Arc<Session>,
@@ -95,6 +98,18 @@ async fn run_lcm_compact_task_inner(
     } else {
         None
     };
+
+    maybe_promote_lcm_durable_memory(
+        sess.as_ref(),
+        &runtime,
+        &head,
+        &source_event_refs,
+        leaf_summary.as_ref(),
+        &summary_text,
+        source_token_count,
+        summary_token_count,
+    )
+    .await;
 
     let packet = runtime
         .assemble_context(
@@ -327,11 +342,102 @@ fn render_packet_message(packet: &codex_open_brain::ContextPacket, summary_text:
     }
 }
 
+async fn maybe_promote_lcm_durable_memory(
+    sess: &Session,
+    runtime: &codex_open_brain::OpenBrainRuntime,
+    head: &[ResponseItem],
+    source_event_refs: &[String],
+    leaf_summary: Option<&codex_open_brain::OpenBrainLeafSummary>,
+    summary_text: &str,
+    source_token_count: u32,
+    summary_token_count: u32,
+) {
+    let Some(leaf_summary) = leaf_summary else {
+        return;
+    };
+    if summary_text.trim().is_empty()
+        || source_token_count < MIN_DURABLE_MEMORY_SOURCE_TOKENS
+        || !memory_promotion_enabled(sess, sess.conversation_id).await
+    {
+        return;
+    }
+
+    let record = codex_open_brain::OpenBrainDurableMemoryRecord {
+        title: latest_user_message_title(head),
+        content: summary_text.to_string(),
+        memory_type: "lcm_leaf_summary".to_string(),
+        source_node_ids: vec![leaf_summary.summary_node_id.clone()],
+        source_event_ids: source_event_refs.to_vec(),
+        metadata: std::collections::BTreeMap::from([
+            (
+                "memory_kind".to_string(),
+                serde_json::Value::String("lcm_leaf_summary".to_string()),
+            ),
+            (
+                "summary_node_id".to_string(),
+                serde_json::Value::String(leaf_summary.summary_node_id.clone()),
+            ),
+            (
+                "source_token_count".to_string(),
+                serde_json::Value::from(source_token_count),
+            ),
+            (
+                "summary_token_count".to_string(),
+                serde_json::Value::from(summary_token_count),
+            ),
+        ]),
+        mirror_to_thoughts: runtime.mirror_durable_to_thoughts(),
+    };
+    if let Err(err) = runtime.promote_durable_memory(&[record]).await {
+        tracing::warn!("Open Brain durable-memory promotion failed: {err}");
+    }
+}
+
+async fn memory_promotion_enabled(sess: &Session, thread_id: ThreadId) -> bool {
+    let Some(state_db) = sess.services.state_db.as_deref() else {
+        return true;
+    };
+    match state_db.get_thread_memory_mode(thread_id).await {
+        Ok(None) => true,
+        Ok(Some(mode)) => mode == "enabled",
+        Err(err) => {
+            tracing::warn!("failed to read thread memory mode for LCM promotion: {err}");
+            true
+        }
+    }
+}
+
+fn latest_user_message_title(items: &[ResponseItem]) -> String {
+    latest_user_message_text(items)
+        .map(|text| format!("LCM memory: {}", preview_text(&text, 72)))
+        .unwrap_or_else(|| "LCM durable memory".to_string())
+}
+
+fn latest_user_message_text(items: &[ResponseItem]) -> Option<String> {
+    items.iter().rev().find_map(|item| match item {
+        ResponseItem::Message { role, content, .. } if role == "user" => {
+            content_items_to_text(content)
+        }
+        _ => None,
+    })
+}
+
+fn preview_text(text: &str, max_chars: usize) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut preview = compact.chars().take(max_chars).collect::<String>();
+    if compact.chars().count() > max_chars {
+        preview.push('…');
+    }
+    preview
+}
+
 #[cfg(test)]
 mod tests {
+    use super::latest_user_message_title;
     use super::split_history_for_lcm;
     use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::models::ResponseItem;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn split_history_keeps_tool_pairs_in_tail() {
@@ -363,5 +469,44 @@ mod tests {
         assert_eq!(tail.len(), 2);
         assert!(matches!(tail[0], ResponseItem::FunctionCall { .. }));
         assert!(matches!(tail[1], ResponseItem::FunctionCallOutput { .. }));
+    }
+
+    #[test]
+    fn latest_user_message_title_uses_recent_user_prompt() {
+        let items = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![codex_protocol::models::ContentItem::InputText {
+                    text: "Initial task".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![codex_protocol::models::ContentItem::OutputText {
+                    text: "Working".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![codex_protocol::models::ContentItem::InputText {
+                    text: "Capture the project-scoped decision and preserve the context"
+                        .to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+        ];
+
+        assert_eq!(
+            latest_user_message_title(&items),
+            "LCM memory: Capture the project-scoped decision and preserve the context"
+        );
     }
 }
