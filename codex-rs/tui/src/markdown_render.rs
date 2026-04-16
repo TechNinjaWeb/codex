@@ -108,7 +108,8 @@ pub(crate) fn render_markdown_text_with_width_and_cwd(
 ) -> Text<'static> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
-    let parser = Parser::new_ext(input, options);
+    let normalized = crate::markdown_preprocess::normalize_markdown(input);
+    let parser = Parser::new_ext(&normalized, options);
     let mut w = Writer::new(parser, width, cwd);
     w.run();
     w.text

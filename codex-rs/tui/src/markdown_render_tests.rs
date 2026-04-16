@@ -660,6 +660,34 @@ fn link() {
 }
 
 #[test]
+fn pipe_table_with_links_renders_as_structured_list() {
+    let markdown = "\
+| Project | Repo |\n\
+|---|---|\n\
+| Mem0 | [mem0ai/mem0](https://github.com/mem0ai/mem0) |\n";
+
+    let text = render_markdown_text(markdown);
+    let rendered = text
+        .lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.clone())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        rendered,
+        vec![
+            "- Project: Mem0".to_string(),
+            "  Repo: mem0ai/mem0 (https://github.com/mem0ai/mem0)".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn load_location_suffix_regexes() {
     let _colon = &*COLON_LOCATION_SUFFIX_RE;
     let _hash = &*HASH_LOCATION_SUFFIX_RE;

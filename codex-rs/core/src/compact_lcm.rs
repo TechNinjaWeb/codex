@@ -284,33 +284,64 @@ fn packet_items_to_history(packet: &codex_open_brain::ContextPacket) -> Vec<Resp
         .iter()
         .filter_map(|item| match item.kind {
             codex_open_brain::ContextPacketItemKind::RecentTail => None,
-            codex_open_brain::ContextPacketItemKind::GraphFrontier => Some(history_message(
-                "LCM frontier summary",
-                item.content.clone(),
-                item.selection_reason.clone(),
-            )),
-            codex_open_brain::ContextPacketItemKind::DurableMemory => Some(history_message(
-                "LCM durable memory",
-                item.content.clone(),
-                item.selection_reason.clone(),
-            )),
-            codex_open_brain::ContextPacketItemKind::ExplicitExpansion => Some(history_message(
-                "LCM expansion",
-                item.content.clone(),
-                item.selection_reason.clone(),
-            )),
-            codex_open_brain::ContextPacketItemKind::WorkingMemory => Some(history_message(
-                "LCM working memory",
-                item.content.clone(),
-                item.selection_reason.clone(),
-            )),
-            codex_open_brain::ContextPacketItemKind::SystemInstruction => Some(history_message(
-                "LCM system instruction",
-                item.content.clone(),
-                item.selection_reason.clone(),
-            )),
+            codex_open_brain::ContextPacketItemKind::GraphFrontier => {
+                Some(context_history_message(
+                    "LCM frontier summary",
+                    item.content.clone(),
+                    item.selection_reason.clone(),
+                ))
+            }
+            codex_open_brain::ContextPacketItemKind::DurableMemory => {
+                Some(context_history_message(
+                    "LCM durable memory",
+                    item.content.clone(),
+                    item.selection_reason.clone(),
+                ))
+            }
+            codex_open_brain::ContextPacketItemKind::ExplicitExpansion => {
+                Some(context_history_message(
+                    "LCM expansion",
+                    item.content.clone(),
+                    item.selection_reason.clone(),
+                ))
+            }
+            codex_open_brain::ContextPacketItemKind::WorkingMemory => {
+                Some(context_history_message(
+                    "LCM working memory",
+                    item.content.clone(),
+                    item.selection_reason.clone(),
+                ))
+            }
+            codex_open_brain::ContextPacketItemKind::SystemInstruction => {
+                Some(context_history_message(
+                    "LCM system instruction",
+                    item.content.clone(),
+                    item.selection_reason.clone(),
+                ))
+            }
         })
         .collect()
+}
+
+fn context_history_message(
+    title: impl AsRef<str>,
+    content: String,
+    selection_reason: impl AsRef<str>,
+) -> ResponseItem {
+    ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: format!(
+                "{}\n{}\n\nReason: {}",
+                title.as_ref(),
+                content,
+                selection_reason.as_ref()
+            ),
+        }],
+        end_turn: None,
+        phase: None,
+    }
 }
 
 fn history_message(
@@ -433,8 +464,14 @@ fn preview_text(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::context_history_message;
     use super::latest_user_message_title;
+    use super::packet_items_to_history;
     use super::split_history_for_lcm;
+    use codex_open_brain::ContextPacket;
+    use codex_open_brain::ContextPacketItem;
+    use codex_open_brain::ContextPacketItemKind;
+    use codex_protocol::models::ContentItem;
     use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::models::ResponseItem;
     use pretty_assertions::assert_eq;
@@ -507,6 +544,61 @@ mod tests {
         assert_eq!(
             latest_user_message_title(&items),
             "LCM memory: Capture the project-scoped decision and preserve the context"
+        );
+    }
+
+    #[test]
+    fn packet_history_replays_as_assistant_markdown() {
+        let packet = ContextPacket {
+            packet_id: "packet-1".to_string(),
+            packet_node_id: None,
+            session_id: None,
+            thread_id: "thread-1".to_string(),
+            project_key: None,
+            scope_key: None,
+            token_budget: 4000,
+            items: vec![
+                ContextPacketItem {
+                    kind: ContextPacketItemKind::GraphFrontier,
+                    content: "**Strong**\n- bullet".to_string(),
+                    source_refs: Vec::new(),
+                    selection_reason: "frontier".to_string(),
+                    depth: Some(0),
+                    src_tok: Some(100),
+                    desc_tok: Some(20),
+                },
+                ContextPacketItem {
+                    kind: ContextPacketItemKind::RecentTail,
+                    content: "leave tail alone".to_string(),
+                    source_refs: Vec::new(),
+                    selection_reason: "tail".to_string(),
+                    depth: None,
+                    src_tok: None,
+                    desc_tok: None,
+                },
+            ],
+        };
+
+        let history = packet_items_to_history(&packet);
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0],
+            context_history_message(
+                "LCM frontier summary",
+                "**Strong**\n- bullet".to_string(),
+                "frontier",
+            )
+        );
+
+        let ResponseItem::Message { role, content, .. } = &history[0] else {
+            panic!("expected message response item");
+        };
+        assert_eq!(role, "assistant");
+        assert_eq!(
+            content,
+            &vec![ContentItem::OutputText {
+                text: "LCM frontier summary\n**Strong**\n- bullet\n\nReason: frontier".to_string(),
+            }]
         );
     }
 }
