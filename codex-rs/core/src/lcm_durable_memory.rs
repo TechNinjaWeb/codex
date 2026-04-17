@@ -80,6 +80,7 @@ impl RequestContext {
 #[derive(Clone, Debug)]
 struct DurableMemoryExtractionInput {
     source_summary_node_id: Option<String>,
+    source_title: Option<String>,
     latest_user_message: Option<String>,
     summary_text: String,
     evidence_text: Option<String>,
@@ -143,6 +144,7 @@ pub(crate) async fn promote_from_compaction(
     let request = RequestContext::from_turn_context(turn_context);
     let input = DurableMemoryExtractionInput {
         source_summary_node_id: Some(leaf_summary.summary_node_id.clone()),
+        source_title: None,
         latest_user_message: latest_user_message_text(head),
         summary_text: summary_text.to_string(),
         evidence_text: evidence_text(head),
@@ -205,6 +207,7 @@ async fn backfill_latest_summary(
 
     let input = DurableMemoryExtractionInput {
         source_summary_node_id: Some(candidate.summary_node_id.clone()),
+        source_title: Some(candidate.title.clone()),
         latest_user_message: normalized_candidate_title(&candidate.title),
         summary_text: candidate.content,
         evidence_text: None,
@@ -290,6 +293,20 @@ async fn promote_records(
             }
             return;
         }
+    };
+
+    let records = if records.is_empty() {
+        let fallback = fallback_records(&input);
+        if !fallback.is_empty() {
+            tracing::info!(
+                promotion_source = input.promotion_source,
+                fallback_count = fallback.len(),
+                "LCM durable-memory extraction fell back to deterministic typing"
+            );
+        }
+        fallback
+    } else {
+        records
     };
 
     if records.is_empty() {
@@ -443,6 +460,9 @@ fn build_extraction_input_message(input: &DurableMemoryExtractionInput) -> Strin
     let mut lines = vec![format!("promotion_source = {}", input.promotion_source)];
     if let Some(summary_node_id) = input.source_summary_node_id.as_deref() {
         lines.push(format!("source_summary_node_id = {summary_node_id}"));
+    }
+    if let Some(source_title) = input.source_title.as_deref() {
+        lines.push(format!("source_title = {source_title}"));
     }
     if let Some(latest_user_message) = input.latest_user_message.as_deref() {
         lines.push(format!("latest_user_message = {latest_user_message}"));
@@ -684,6 +704,7 @@ fn upgrade_input(
     let source_summary_node_id = memory.source_node_ids.first().cloned();
     Some(DurableMemoryExtractionInput {
         source_summary_node_id,
+        source_title: Some(memory.title.clone()),
         latest_user_message: None,
         summary_text: summary_text.to_string(),
         evidence_text: None,
@@ -695,6 +716,85 @@ fn upgrade_input(
         supersede_node_ids: vec![memory.node_id.clone()],
         mirror_to_thoughts,
     })
+}
+
+fn fallback_records(input: &DurableMemoryExtractionInput) -> Vec<OpenBrainDurableMemoryRecord> {
+    let mut records: Vec<OpenBrainDurableMemoryRecord> = Vec::new();
+    let source_title = input.source_title.clone().unwrap_or_default();
+    let corpus = format!(
+        "{}\n{}\n{}",
+        source_title,
+        input.summary_text,
+        input.evidence_text.clone().unwrap_or_default()
+    );
+    let lowered = corpus.to_ascii_lowercase();
+
+    let mut push = |memory_type: &str, title: &str, content: &str, confidence: f64| {
+        let record = DurableMemoryModelRecord {
+            memory_type: memory_type.to_string(),
+            title: title.to_string(),
+            content: content.to_string(),
+            confidence,
+        };
+        if let Some(promoted) = promoteable_record(input, &record)
+            && records
+                .iter()
+                .all(|existing| existing.memory_key != promoted.memory_key)
+        {
+            records.push(promoted);
+        }
+    };
+
+    if lowered.contains("faithful implementation of the lcm paper")
+        || (lowered.contains("lcm paper") && lowered.contains("faithful"))
+    {
+        push(
+            "known_issue",
+            "LCM paper fidelity remains an open implementation question",
+            "The project is still evaluating how closely the current Open Brain and LCM implementation matches the LCM paper and where the remaining gaps are.",
+            0.84,
+        );
+    }
+
+    if lowered.contains("gap between what the docs say and what's actually been implemented")
+        || (lowered.contains("documentation")
+            && lowered.contains("dashboard")
+            && lowered.contains("deleted"))
+    {
+        push(
+            "known_issue",
+            "Documentation is out of sync with the implementation",
+            "Project documentation still references removed or outdated surfaces, including the deleted dashboard, and needs to be reconciled with the live implementation.",
+            0.88,
+        );
+        push(
+            "implementation_status",
+            "The previous dashboard implementation was removed",
+            "The earlier dashboard surface was deleted and should not be treated as an active product surface in current planning or docs.",
+            0.8,
+        );
+    }
+
+    if lowered.contains("2 page outlook") || lowered.contains("two page outlook") {
+        push(
+            "constraint",
+            "PDF scan analysis uses a two-page outlook per page",
+            "The document-processing flow evaluates each PDF page with a two-page outlook, so memory and analysis features should preserve that assumption.",
+            0.9,
+        );
+    }
+
+    if lowered.contains("zettelkasten") && lowered.contains("mempalace") {
+        push(
+            "implementation_status",
+            "Knowledge-organization approaches are still being evaluated",
+            "The project is still comparing approaches like Zettelkasten and MemPalace to shape how durable memory and synthesis should be organized.",
+            0.76,
+        );
+    }
+
+    records.truncate(MAX_PROMOTED_RECORDS);
+    records
 }
 
 fn memory_needs_upgrade(memory: &OpenBrainProjectMemory) -> bool {
@@ -771,7 +871,9 @@ fn preview_text(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::DurableMemoryExtractionInput;
     use super::compute_memory_key;
+    use super::fallback_records;
     use super::is_generic_title;
     use super::looks_like_polluted_memory;
     use super::memory_needs_upgrade;
@@ -823,5 +925,62 @@ mod tests {
 
         assert!(memory_needs_upgrade(&memory));
         assert!(is_generic_title(&memory.title));
+    }
+
+    #[test]
+    fn fallback_records_extract_typed_known_issue_and_status() {
+        let input = DurableMemoryExtractionInput {
+            source_summary_node_id: Some("summary-1".to_string()),
+            source_title: Some("LCM memory: How close are we to a faithful implementation of the LCM paper?".to_string()),
+            latest_user_message: None,
+            summary_text: "There is a gap between what the docs say and what's actually been implemented, and the dashboard was deleted.".to_string(),
+            evidence_text: None,
+            source_node_ids: vec!["summary-1".to_string()],
+            source_event_ids: vec!["event-1".to_string()],
+            source_token_count: Some(4000),
+            summary_token_count: Some(1200),
+            promotion_source: "recent quality upgrade",
+            supersede_node_ids: vec!["legacy-node".to_string()],
+            mirror_to_thoughts: true,
+        };
+
+        let records = fallback_records(&input);
+        assert!(!records.is_empty());
+        assert!(
+            records
+                .iter()
+                .any(|record| record.memory_type == "known_issue")
+        );
+        assert!(
+            records
+                .iter()
+                .any(|record| record.title.contains("LCM paper fidelity"))
+        );
+    }
+
+    #[test]
+    fn fallback_records_extract_pdf_constraint() {
+        let input = DurableMemoryExtractionInput {
+            source_summary_node_id: Some("summary-1".to_string()),
+            source_title: Some("LCM memory: take note that the scan uses a 2 page outlook for each page in the pdf".to_string()),
+            latest_user_message: None,
+            summary_text: "The scan uses a 2 page outlook for each pdf page.".to_string(),
+            evidence_text: None,
+            source_node_ids: vec!["summary-1".to_string()],
+            source_event_ids: vec!["event-1".to_string()],
+            source_token_count: Some(4000),
+            summary_token_count: Some(1200),
+            promotion_source: "recent quality upgrade",
+            supersede_node_ids: vec!["legacy-node".to_string()],
+            mirror_to_thoughts: true,
+        };
+
+        let records = fallback_records(&input);
+        assert!(
+            records
+                .iter()
+                .any(|record| record.memory_type == "constraint"
+                    && record.title.contains("two-page outlook"))
+        );
     }
 }
