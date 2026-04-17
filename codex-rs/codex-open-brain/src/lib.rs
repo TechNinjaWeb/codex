@@ -351,6 +351,10 @@ pub struct OpenBrainProjectMemory {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope_key: Option<String>,
@@ -358,6 +362,12 @@ pub struct OpenBrainProjectMemory {
     pub updated_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_thought_id: Option<String>,
+    #[serde(default)]
+    pub source_node_ids: Vec<String>,
+    #[serde(default)]
+    pub source_event_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_at: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -921,10 +931,14 @@ pub struct OpenBrainDurableMemoryRecord {
     pub title: String,
     pub content: String,
     pub memory_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_key: Option<String>,
     #[serde(default)]
     pub source_node_ids: Vec<String>,
     #[serde(default)]
     pub source_event_ids: Vec<String>,
+    #[serde(default)]
+    pub supersede_node_ids: Vec<String>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
     #[serde(default)]

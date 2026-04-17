@@ -18,6 +18,7 @@ pub use codex::SteerInputError;
 mod codex_thread;
 mod compact_lcm;
 mod compact_remote;
+mod lcm_durable_memory;
 pub use codex_thread::CodexThread;
 pub use codex_thread::ThreadConfigSnapshot;
 mod agent;

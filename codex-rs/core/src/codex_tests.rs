@@ -4178,10 +4178,15 @@ fn render_open_brain_project_bootstrap_section_lists_recovered_memories() {
                 title: "Architecture direction".to_string(),
                 content: "Prefer Open Brain durable memories as the startup baseline.".to_string(),
                 memory_key: None,
+                memory_type: Some("implementation_status".to_string()),
+                quality_version: Some(1),
                 project_key: Some("/tmp/project".to_string()),
                 scope_key: Some("/tmp/project".to_string()),
                 updated_at: None,
                 source_thought_id: None,
+                source_node_ids: vec!["summary-1".to_string()],
+                source_event_ids: vec!["event-1".to_string()],
+                superseded_at: None,
             },
             OpenBrainProjectMemory {
                 node_id: "memory-2".to_string(),
@@ -4189,16 +4194,21 @@ fn render_open_brain_project_bootstrap_section_lists_recovered_memories() {
                 title: "LCM durable memory".to_string(),
                 content: "Second memory body.".to_string(),
                 memory_key: None,
+                memory_type: Some("durable_memory".to_string()),
+                quality_version: None,
                 project_key: Some("/tmp/project".to_string()),
                 scope_key: Some("/tmp/project".to_string()),
                 updated_at: None,
                 source_thought_id: None,
+                source_node_ids: vec!["summary-2".to_string()],
+                source_event_ids: vec!["event-2".to_string()],
+                superseded_at: None,
             },
         ],
     );
 
     assert!(section.contains("<open_brain_project_bootstrap>"));
-    assert!(section.contains("- [memory-1] Architecture direction"));
+    assert!(section.contains("- [memory-1] implementation_status: Architecture direction"));
     assert!(section.contains("Prefer Open Brain durable memories as the startup baseline."));
     assert!(!section.contains("memory-2"));
 }

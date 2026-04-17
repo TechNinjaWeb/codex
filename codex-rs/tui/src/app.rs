@@ -572,6 +572,14 @@ fn lcm_node_title(node: &serde_json::Value) -> String {
 fn lcm_node_summary(node: &serde_json::Value) -> String {
     let kind = lcm_node_kind(node);
     let id = lcm_node_id(node);
+    let typed_kind = if kind == "durable_memory" {
+        lcm_json_str(node, &["memory_type", "memoryType"])
+            .filter(|memory_type| !memory_type.is_empty())
+            .unwrap_or(kind.as_str())
+            .to_string()
+    } else {
+        kind.to_string()
+    };
     let depth = lcm_json_usize(node, &["depth"])
         .map(|depth| format!(" d{depth}"))
         .unwrap_or_default();
@@ -582,7 +590,7 @@ fn lcm_node_summary(node: &serde_json::Value) -> String {
         .map(|value| format!(" desc={value}"))
         .unwrap_or_default();
     format!(
-        "{kind}{depth}{src_tok}{desc_tok} {} {}",
+        "{typed_kind}{depth}{src_tok}{desc_tok} {} {}",
         lcm_preview_text(&id, 12),
         lcm_node_title(node)
     )

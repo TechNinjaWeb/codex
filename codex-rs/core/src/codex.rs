@@ -2453,7 +2453,7 @@ impl Session {
                 &session_configuration.session_source,
             );
         } else {
-            crate::compact_lcm::start_lcm_durable_memory_backfill_task(&sess);
+            crate::lcm_durable_memory::start_startup_tasks(&sess);
         }
 
         Ok(sess)
@@ -4332,10 +4332,20 @@ impl Session {
     ) -> Option<(String, String, Option<String>)> {
         let title = memory.title.trim();
         let normalized_title = title.to_ascii_lowercase();
+        let normalized_type = memory
+            .memory_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|memory_type| !memory_type.is_empty())
+            .map(str::to_ascii_lowercase);
         if title.is_empty()
             || matches!(
                 normalized_title.as_str(),
                 "lcm durable memory" | "durable memory" | "project durable memory"
+            )
+            || matches!(
+                normalized_type.as_deref(),
+                Some("lcm_leaf_summary") | Some("durable_memory")
             )
         {
             return None;
@@ -4343,7 +4353,10 @@ impl Session {
 
         Some((
             memory.node_id.clone(),
-            title.to_string(),
+            normalized_type
+                .as_deref()
+                .map(|memory_type| format!("{memory_type}: {title}"))
+                .unwrap_or_else(|| title.to_string()),
             Self::open_brain_bootstrap_body(memory.content.trim()),
         ))
     }
