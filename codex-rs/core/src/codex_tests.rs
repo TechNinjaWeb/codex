@@ -4213,6 +4213,33 @@ fn render_open_brain_project_bootstrap_section_lists_recovered_memories() {
     assert!(!section.contains("memory-2"));
 }
 
+#[test]
+fn render_open_brain_project_bootstrap_section_falls_back_to_generic_memories() {
+    let section = Session::render_open_brain_project_bootstrap_section(
+        "/tmp/project",
+        "/tmp/project",
+        &[OpenBrainProjectMemory {
+            node_id: "memory-legacy".to_string(),
+            node_kind: "durable_memory".to_string(),
+            title: "Architecture direction".to_string(),
+            content: "Prefer Open Brain durable memories as the startup baseline.".to_string(),
+            memory_key: None,
+            memory_type: Some("lcm_leaf_summary".to_string()),
+            quality_version: None,
+            project_key: Some("/tmp/project".to_string()),
+            scope_key: Some("/tmp/project".to_string()),
+            updated_at: None,
+            source_thought_id: None,
+            source_node_ids: vec!["summary-1".to_string()],
+            source_event_ids: vec!["event-1".to_string()],
+            superseded_at: None,
+        }],
+    );
+
+    assert!(section.contains("- [memory-legacy] lcm_leaf_summary: Architecture direction"));
+    assert!(section.contains("Prefer Open Brain durable memories as the startup baseline."));
+}
+
 #[tokio::test]
 async fn build_initial_context_omits_default_image_save_location_with_image_history() {
     let (session, turn_context) = make_session_and_context().await;

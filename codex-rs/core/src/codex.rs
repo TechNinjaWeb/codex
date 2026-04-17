@@ -4302,10 +4302,16 @@ impl Session {
             format!("cwd = {cwd}"),
         ];
 
-        let bootstrap_memories = memories
+        let mut bootstrap_memories = memories
             .iter()
-            .filter_map(Self::open_brain_bootstrap_memory_entry)
+            .filter_map(|memory| Self::open_brain_bootstrap_memory_entry(memory, false))
             .collect::<Vec<_>>();
+        if bootstrap_memories.is_empty() {
+            bootstrap_memories = memories
+                .iter()
+                .filter_map(|memory| Self::open_brain_bootstrap_memory_entry(memory, true))
+                .collect::<Vec<_>>();
+        }
 
         if bootstrap_memories.is_empty() {
             lines.push("memories = none".to_string());
@@ -4329,6 +4335,7 @@ impl Session {
 
     fn open_brain_bootstrap_memory_entry(
         memory: &OpenBrainProjectMemory,
+        allow_generic_memory_types: bool,
     ) -> Option<(String, String, Option<String>)> {
         let title = memory.title.trim();
         let normalized_title = title.to_ascii_lowercase();
@@ -4343,10 +4350,11 @@ impl Session {
                 normalized_title.as_str(),
                 "lcm durable memory" | "durable memory" | "project durable memory"
             )
-            || matches!(
-                normalized_type.as_deref(),
-                Some("lcm_leaf_summary") | Some("durable_memory")
-            )
+            || (!allow_generic_memory_types
+                && matches!(
+                    normalized_type.as_deref(),
+                    Some("lcm_leaf_summary") | Some("durable_memory")
+                ))
         {
             return None;
         }
