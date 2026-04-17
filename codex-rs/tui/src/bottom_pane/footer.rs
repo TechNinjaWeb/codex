@@ -642,8 +642,23 @@ fn footer_from_props_lines(
 /// currently viewed agent label, or any combination of those values. Active instructional states
 /// such as quit reminders, shortcut overlays, and queue prompts deliberately return `None` so
 /// those call-to-action hints stay visible.
-pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'static>> {
-    if !shows_passive_footer_line(props) {
+fn compose_passive_footer_status_line(
+    props: &FooterProps,
+    allow_while_running: bool,
+) -> Option<Line<'static>> {
+    let can_show = if allow_while_running {
+        match props.mode {
+            FooterMode::ComposerEmpty | FooterMode::ComposerHasDraft => true,
+            FooterMode::HistorySearch
+            | FooterMode::QuitShortcutReminder
+            | FooterMode::ShortcutOverlay
+            | FooterMode::EscHint => false,
+        }
+    } else {
+        shows_passive_footer_line(props)
+    };
+
+    if !can_show {
         return None;
     }
 
@@ -679,6 +694,21 @@ pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'st
     }
 
     line
+}
+
+pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'static>> {
+    compose_passive_footer_status_line(props, /*allow_while_running*/ false)
+}
+
+/// Build the contextual status line even while a task is active.
+///
+/// This is used by the live status row so that the same status-line/context
+/// signal remains visible during streaming instead of disappearing behind the
+/// working indicator.
+pub(crate) fn passive_footer_status_line_while_running(
+    props: &FooterProps,
+) -> Option<Line<'static>> {
+    compose_passive_footer_status_line(props, /*allow_while_running*/ true)
 }
 
 /// Whether the current footer mode allows contextual information to replace instructional hints.

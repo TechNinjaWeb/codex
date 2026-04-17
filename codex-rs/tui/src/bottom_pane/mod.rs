@@ -782,6 +782,7 @@ impl BottomPane {
         self.context_window_used_tokens = used_tokens;
         self.composer
             .set_context_window(percent, self.context_window_used_tokens);
+        self.sync_status_inline_message();
         self.request_redraw();
     }
 
@@ -860,7 +861,15 @@ impl BottomPane {
     /// standalone unified-exec footer row to be visible.
     fn sync_status_inline_message(&mut self) {
         if let Some(status) = self.status.as_mut() {
-            status.update_inline_message(self.unified_exec_footer.summary_text());
+            let status_context = self.composer.status_inline_context_text();
+            let exec_summary = self.unified_exec_footer.summary_text();
+            let inline_message = match (status_context, exec_summary) {
+                (Some(context), Some(summary)) => Some(format!("{context} · {summary}")),
+                (Some(context), None) => Some(context),
+                (None, Some(summary)) => Some(summary),
+                (None, None) => None,
+            };
+            status.update_inline_message(inline_message);
         }
     }
 
@@ -1178,12 +1187,14 @@ impl BottomPane {
 
     pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) {
         if self.composer.set_status_line(status_line) {
+            self.sync_status_inline_message();
             self.request_redraw();
         }
     }
 
     pub(crate) fn set_status_line_enabled(&mut self, enabled: bool) {
         if self.composer.set_status_line_enabled(enabled) {
+            self.sync_status_inline_message();
             self.request_redraw();
         }
     }
@@ -1194,6 +1205,7 @@ impl BottomPane {
     /// the label several times while the visible thread settles.
     pub(crate) fn set_active_agent_label(&mut self, active_agent_label: Option<String>) {
         if self.composer.set_active_agent_label(active_agent_label) {
+            self.sync_status_inline_message();
             self.request_redraw();
         }
     }
@@ -1251,6 +1263,7 @@ mod tests {
     use insta::assert_snapshot;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+    use ratatui::text::Line;
     use std::cell::Cell;
     use std::rc::Rc;
     use tokio::sync::mpsc::unbounded_channel;
@@ -1647,6 +1660,35 @@ mod tests {
             "status_and_queued_messages_snapshot",
             render_snapshot(&pane, area)
         );
+    }
+
+    #[test]
+    fn running_status_keeps_context_signal_visible() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = BottomPane::new(BottomPaneParams {
+            app_event_tx: tx,
+            frame_requester: FrameRequester::test_dummy(),
+            has_input_focus: true,
+            enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
+            disable_paste_burst: false,
+            animations_enabled: true,
+            skills: Some(Vec::new()),
+        });
+
+        pane.set_task_running(/*running*/ true);
+        pane.set_status_line_enabled(true);
+        pane.set_status_line(Some(Line::from("gpt-5.4 high · ~/src/project")));
+        pane.set_context_window(Some(32), /*used_tokens*/ None);
+        pane.set_unified_exec_processes(vec!["sleep 5".to_string()]);
+
+        let status = pane.status.as_ref().expect("status indicator");
+        let inline = status.inline_message().expect("inline message");
+        assert!(inline.contains("gpt-5.4 high"));
+        assert!(inline.contains("~/src/project"));
+        assert!(inline.contains("32% context left"));
+        assert!(inline.contains("background terminal"));
     }
 
     #[test]
