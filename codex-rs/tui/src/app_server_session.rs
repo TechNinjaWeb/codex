@@ -41,8 +41,6 @@ use codex_app_server_protocol::ThreadContextExpandParams;
 use codex_app_server_protocol::ThreadContextExpandResponse;
 use codex_app_server_protocol::ThreadContextGraphParams;
 use codex_app_server_protocol::ThreadContextGraphResponse;
-use codex_app_server_protocol::ThreadContextPacketParams;
-use codex_app_server_protocol::ThreadContextPacketResponse;
 use codex_app_server_protocol::ThreadContextSearchParams;
 use codex_app_server_protocol::ThreadContextSearchResponse;
 use codex_app_server_protocol::ThreadForkParams;
@@ -525,26 +523,6 @@ impl AppServerSession {
             })
             .await
             .wrap_err("thread/contextExpand failed in TUI")
-    }
-
-    pub(crate) async fn thread_context_packet(
-        &mut self,
-        thread_id: ThreadId,
-        query: Option<String>,
-        token_budget: Option<u32>,
-    ) -> Result<ThreadContextPacketResponse> {
-        let request_id = self.next_request_id();
-        self.client
-            .request_typed(ClientRequest::ThreadContextPacket {
-                request_id,
-                params: ThreadContextPacketParams {
-                    thread_id: thread_id.to_string(),
-                    query,
-                    token_budget,
-                },
-            })
-            .await
-            .wrap_err("thread/contextPacket failed in TUI")
     }
 
     #[allow(clippy::too_many_arguments)]

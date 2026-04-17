@@ -19,8 +19,6 @@ use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 
-const MIN_DURABLE_MEMORY_SOURCE_TOKENS: u32 = 20_000;
-
 pub(crate) async fn run_inline_lcm_auto_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
@@ -101,6 +99,7 @@ async fn run_lcm_compact_task_inner(
 
     maybe_promote_lcm_durable_memory(
         sess.as_ref(),
+        turn_context.as_ref(),
         &runtime,
         &head,
         &source_event_refs,
@@ -375,6 +374,7 @@ fn render_packet_message(packet: &codex_open_brain::ContextPacket, summary_text:
 
 async fn maybe_promote_lcm_durable_memory(
     sess: &Session,
+    turn_context: &TurnContext,
     runtime: &codex_open_brain::OpenBrainRuntime,
     head: &[ResponseItem],
     source_event_refs: &[String],
@@ -384,21 +384,114 @@ async fn maybe_promote_lcm_durable_memory(
     summary_token_count: u32,
 ) {
     let Some(leaf_summary) = leaf_summary else {
+        tracing::debug!("skipping LCM durable-memory promotion: no leaf summary");
         return;
     };
-    if summary_text.trim().is_empty()
-        || source_token_count < MIN_DURABLE_MEMORY_SOURCE_TOKENS
-        || !memory_promotion_enabled(sess, sess.conversation_id).await
-    {
+    let promotion_mode = lcm_memory_promotion_mode(sess, sess.conversation_id).await;
+    if !promotion_mode.allows_promotion() {
+        tracing::info!(
+            summary_node_id = %leaf_summary.summary_node_id,
+            memory_mode = %promotion_mode.as_str(),
+            "skipping LCM durable-memory promotion: thread memory mode disallows promotion"
+        );
+        sess.notify_background_event(
+            turn_context,
+            format!(
+                "LCM durable memory skipped because thread memory mode is {}.",
+                promotion_mode.as_str()
+            ),
+        )
+        .await;
         return;
     }
 
-    let record = codex_open_brain::OpenBrainDurableMemoryRecord {
+    let candidate = codex_open_brain::OpenBrainDurableMemoryCandidate {
+        summary_node_id: leaf_summary.summary_node_id.clone(),
         title: latest_user_message_title(head),
         content: summary_text.to_string(),
-        memory_type: "lcm_leaf_summary".to_string(),
-        source_node_ids: vec![leaf_summary.summary_node_id.clone()],
         source_event_ids: source_event_refs.to_vec(),
+        source_token_count: Some(source_token_count),
+        summary_token_count: Some(summary_token_count),
+    };
+    promote_lcm_durable_memory_candidate(
+        sess,
+        Some(turn_context),
+        runtime,
+        candidate,
+        "active compaction",
+    )
+    .await;
+}
+
+pub(crate) fn start_lcm_durable_memory_backfill_task(sess: &Arc<Session>) {
+    let sess = Arc::clone(sess);
+    tokio::spawn(async move {
+        if let Err(err) = backfill_latest_lcm_durable_memory(sess).await {
+            tracing::warn!("failed to backfill LCM durable memory on startup: {err}");
+        }
+    });
+}
+
+async fn backfill_latest_lcm_durable_memory(sess: Arc<Session>) -> CodexResult<()> {
+    let Some(runtime) = sess.open_brain_runtime().await else {
+        return Ok(());
+    };
+
+    let promotion_mode = lcm_memory_promotion_mode(sess.as_ref(), sess.conversation_id).await;
+    if !promotion_mode.allows_promotion() {
+        tracing::debug!(
+            memory_mode = %promotion_mode.as_str(),
+            "skipping LCM durable-memory backfill: thread memory mode disallows promotion"
+        );
+        return Ok(());
+    }
+
+    let Some(candidate) = runtime
+        .latest_unpromoted_summary_candidate(128)
+        .await
+        .map_err(|err| {
+            CodexErr::Fatal(format!("Open Brain durable-memory backfill failed: {err}"))
+        })?
+    else {
+        tracing::debug!("skipping LCM durable-memory backfill: no unpromoted summary found");
+        return Ok(());
+    };
+
+    promote_lcm_durable_memory_candidate(
+        sess.as_ref(),
+        None,
+        &runtime,
+        candidate,
+        "startup backfill",
+    )
+    .await;
+    Ok(())
+}
+
+async fn promote_lcm_durable_memory_candidate(
+    sess: &Session,
+    turn_context: Option<&TurnContext>,
+    runtime: &codex_open_brain::OpenBrainRuntime,
+    candidate: codex_open_brain::OpenBrainDurableMemoryCandidate,
+    promotion_source: &str,
+) {
+    if candidate.content.trim().is_empty() {
+        tracing::debug!(
+            summary_node_id = %candidate.summary_node_id,
+            promotion_source,
+            "skipping LCM durable-memory promotion: empty summary text"
+        );
+        return;
+    }
+
+    let source_token_count = candidate.source_token_count.unwrap_or_default();
+
+    let record = codex_open_brain::OpenBrainDurableMemoryRecord {
+        title: candidate.title,
+        content: candidate.content,
+        memory_type: "lcm_leaf_summary".to_string(),
+        source_node_ids: vec![candidate.summary_node_id.clone()],
+        source_event_ids: candidate.source_event_ids,
         metadata: std::collections::BTreeMap::from([
             (
                 "memory_kind".to_string(),
@@ -406,7 +499,7 @@ async fn maybe_promote_lcm_durable_memory(
             ),
             (
                 "summary_node_id".to_string(),
-                serde_json::Value::String(leaf_summary.summary_node_id.clone()),
+                serde_json::Value::String(candidate.summary_node_id.clone()),
             ),
             (
                 "source_token_count".to_string(),
@@ -414,26 +507,91 @@ async fn maybe_promote_lcm_durable_memory(
             ),
             (
                 "summary_token_count".to_string(),
-                serde_json::Value::from(summary_token_count),
+                serde_json::Value::from(candidate.summary_token_count.unwrap_or_default()),
+            ),
+            (
+                "promotion_source".to_string(),
+                serde_json::Value::String(promotion_source.to_string()),
             ),
         ]),
         mirror_to_thoughts: runtime.mirror_durable_to_thoughts(),
     };
-    if let Err(err) = runtime.promote_durable_memory(&[record]).await {
-        tracing::warn!("Open Brain durable-memory promotion failed: {err}");
+    match runtime.promote_durable_memory(&[record]).await {
+        Ok(result) => {
+            tracing::info!(
+                summary_node_id = %candidate.summary_node_id,
+                inserted_count = result.inserted_count,
+                promotion_source,
+                "Open Brain durable-memory promotion succeeded"
+            );
+            if result.inserted_count > 0 {
+                if let Some(turn_context) = turn_context {
+                    sess.notify_background_event(
+                        turn_context,
+                        format!(
+                            "LCM durable memory promoted from summary {}.",
+                            candidate.summary_node_id
+                        ),
+                    )
+                    .await;
+                }
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                summary_node_id = %candidate.summary_node_id,
+                promotion_source,
+                "Open Brain durable-memory promotion failed: {err}"
+            );
+            if let Some(turn_context) = turn_context {
+                sess.notify_background_event(
+                    turn_context,
+                    format!("LCM durable-memory promotion failed: {err}"),
+                )
+                .await;
+            }
+        }
     }
 }
 
-async fn memory_promotion_enabled(sess: &Session, thread_id: ThreadId) -> bool {
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LcmMemoryPromotionMode {
+    Enabled,
+    Disabled,
+    Legacy(String),
+}
+
+impl LcmMemoryPromotionMode {
+    fn allows_promotion(&self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+            Self::Legacy(mode) => mode.as_str(),
+        }
+    }
+}
+
+fn lcm_resolve_memory_promotion_mode(mode: Option<&str>) -> LcmMemoryPromotionMode {
+    match mode {
+        Some("disabled") => LcmMemoryPromotionMode::Disabled,
+        Some("enabled") | None => LcmMemoryPromotionMode::Enabled,
+        Some(legacy) => LcmMemoryPromotionMode::Legacy(legacy.to_string()),
+    }
+}
+
+async fn lcm_memory_promotion_mode(sess: &Session, thread_id: ThreadId) -> LcmMemoryPromotionMode {
     let Some(state_db) = sess.services.state_db.as_deref() else {
-        return true;
+        return LcmMemoryPromotionMode::Enabled;
     };
     match state_db.get_thread_memory_mode(thread_id).await {
-        Ok(None) => true,
-        Ok(Some(mode)) => mode == "enabled",
+        Ok(mode) => lcm_resolve_memory_promotion_mode(mode.as_deref()),
         Err(err) => {
             tracing::warn!("failed to read thread memory mode for LCM promotion: {err}");
-            true
+            LcmMemoryPromotionMode::Enabled
         }
     }
 }
@@ -464,8 +622,10 @@ fn preview_text(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::LcmMemoryPromotionMode;
     use super::context_history_message;
     use super::latest_user_message_title;
+    use super::lcm_resolve_memory_promotion_mode;
     use super::packet_items_to_history;
     use super::split_history_for_lcm;
     use codex_open_brain::ContextPacket;
@@ -600,5 +760,25 @@ mod tests {
                 text: "LCM frontier summary\n**Strong**\n- bullet\n\nReason: frontier".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn lcm_memory_promotion_blocks_only_disabled_mode() {
+        assert_eq!(
+            lcm_resolve_memory_promotion_mode(Some("disabled")),
+            LcmMemoryPromotionMode::Disabled
+        );
+        assert!(!lcm_resolve_memory_promotion_mode(Some("disabled")).allows_promotion());
+        assert!(lcm_resolve_memory_promotion_mode(Some("enabled")).allows_promotion());
+        assert!(lcm_resolve_memory_promotion_mode(None).allows_promotion());
+    }
+
+    #[test]
+    fn lcm_memory_promotion_allows_legacy_modes() {
+        assert_eq!(
+            lcm_resolve_memory_promotion_mode(Some("polluted")),
+            LcmMemoryPromotionMode::Legacy("polluted".to_string())
+        );
+        assert!(lcm_resolve_memory_promotion_mode(Some("polluted")).allows_promotion());
     }
 }

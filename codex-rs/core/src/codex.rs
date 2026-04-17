@@ -2445,6 +2445,8 @@ impl Session {
                 Arc::clone(&config),
                 &session_configuration.session_source,
             );
+        } else {
+            crate::compact_lcm::start_lcm_durable_memory_backfill_task(&sess);
         }
 
         Ok(sess)

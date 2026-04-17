@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -326,6 +327,19 @@ pub struct OpenBrainNodeDescription {
     pub span: Option<JsonValue>,
     #[serde(default)]
     pub context_packets: Vec<JsonValue>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct OpenBrainDurableMemoryCandidate {
+    pub summary_node_id: String,
+    pub title: String,
+    pub content: String,
+    #[serde(default)]
+    pub source_event_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_token_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_token_count: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -711,6 +725,16 @@ impl OpenBrainRuntime {
             .collect())
     }
 
+    pub async fn latest_unpromoted_summary_candidate(
+        &self,
+        limit: usize,
+    ) -> Result<Option<OpenBrainDurableMemoryCandidate>, OpenBrainClientError> {
+        let graph = self
+            .graph_view(/*include_superseded*/ false, limit.max(64))
+            .await?;
+        Ok(latest_unpromoted_summary_candidate_from_graph(&graph))
+    }
+
     pub async fn promote_durable_memory(
         &self,
         records: &[OpenBrainDurableMemoryRecord],
@@ -777,6 +801,86 @@ fn derive_project_key(cwd: &Path, strategy: OpenBrainProjectScopeStrategy) -> St
 
 fn discover_git_root(start: &Path) -> Option<&Path> {
     start.ancestors().find(|path| path.join(".git").exists())
+}
+
+fn graph_json_str<'a>(value: &'a JsonValue, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(JsonValue::as_str))
+}
+
+fn graph_json_u32(value: &JsonValue, keys: &[&str]) -> Option<u32> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(JsonValue::as_u64))
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+fn graph_json_string_array(value: &JsonValue, keys: &[&str]) -> Vec<String> {
+    keys.iter()
+        .find_map(|key| {
+            value.get(*key).and_then(JsonValue::as_array).map(|items| {
+                items
+                    .iter()
+                    .filter_map(JsonValue::as_str)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn latest_unpromoted_summary_candidate_from_graph(
+    graph: &OpenBrainGraphView,
+) -> Option<OpenBrainDurableMemoryCandidate> {
+    let promoted_targets = graph
+        .edges
+        .iter()
+        .filter(|edge| {
+            graph_json_str(edge, &["relationship_type", "relationshipType"]) == Some("PROMOTES_TO")
+        })
+        .filter_map(|edge| graph_json_str(edge, &["to_node_id", "toNodeId"]).map(str::to_string))
+        .collect::<BTreeSet<_>>();
+
+    let latest_packet_query = graph
+        .status
+        .as_ref()
+        .and_then(|status| status.latest_packet_query.as_ref())
+        .map(|query| query.trim())
+        .filter(|query| !query.is_empty())
+        .map(ToString::to_string);
+
+    graph.nodes.iter().find_map(|node| {
+        let node_kind = graph_json_str(node, &["node_kind", "nodeKind"])?;
+        if !matches!(node_kind, "summary_d0" | "summary_d1plus") {
+            return None;
+        }
+        let node_id = graph_json_str(node, &["node_id", "id"])?;
+        if promoted_targets.contains(node_id) {
+            return None;
+        }
+        let content = graph_json_str(node, &["content"])?.trim().to_string();
+        if content.is_empty() {
+            return None;
+        }
+
+        let title = latest_packet_query
+            .clone()
+            .or_else(|| {
+                graph_json_str(node, &["title"])
+                    .map(str::trim)
+                    .filter(|title| !title.is_empty())
+                    .map(ToString::to_string)
+            })
+            .unwrap_or_else(|| "LCM durable memory".to_string());
+
+        Some(OpenBrainDurableMemoryCandidate {
+            summary_node_id: node_id.to_string(),
+            title,
+            content,
+            source_event_ids: graph_json_string_array(node, &["source_event_ids"]),
+            source_token_count: graph_json_u32(node, &["src_tok", "srcTok"]),
+            summary_token_count: graph_json_u32(node, &["desc_tok", "descTok"]),
+        })
+    })
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -982,14 +1086,19 @@ fn content_items_to_text(items: &[ContentItem]) -> Option<String> {
 mod tests {
     use super::LcmConfig;
     use super::OpenBrainConfig;
+    use super::OpenBrainDurableMemoryCandidate;
+    use super::OpenBrainGraphStatus;
+    use super::OpenBrainGraphView;
     use super::OpenBrainProjectScopeStrategy;
     use super::OpenBrainRuntime;
     use super::content_items_to_text;
+    use super::latest_unpromoted_summary_candidate_from_graph;
     use super::response_item_shape;
     use super::response_item_text;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::models::ResponseItem;
+    use std::collections::BTreeMap;
     use std::path::Path;
 
     #[test]
@@ -1078,5 +1187,90 @@ mod tests {
 
         assert_eq!(runtime.context_token_budget(Some(20_000)), 4_000);
         assert_eq!(runtime.context_token_budget(Some(1_000)), 256);
+    }
+
+    #[test]
+    fn latest_unpromoted_summary_candidate_prefers_latest_unpromoted_summary() {
+        let graph = OpenBrainGraphView {
+            thread_id: "thread-1".to_string(),
+            project_key: None,
+            scope_key: None,
+            nodes: vec![
+                serde_json::json!({
+                    "node_id": "summary-new",
+                    "node_kind": "summary_d0",
+                    "title": "LCM leaf summary",
+                    "content": "new summary content",
+                    "source_event_ids": ["event-2", "event-3"],
+                    "src_tok": 42_000,
+                    "desc_tok": 1_200
+                }),
+                serde_json::json!({
+                    "node_id": "summary-old",
+                    "node_kind": "summary_d0",
+                    "title": "older summary",
+                    "content": "old summary content",
+                    "source_event_ids": ["event-1"],
+                    "src_tok": 21_000,
+                    "desc_tok": 1_000
+                }),
+            ],
+            edges: vec![serde_json::json!({
+                "relationship_type": "PROMOTES_TO",
+                "to_node_id": "summary-old"
+            })],
+            fresh_tail: Vec::new(),
+            context_packets: Vec::new(),
+            status: Some(OpenBrainGraphStatus {
+                fresh_tail_count: 0,
+                packet_count: 1,
+                latest_packet_id: Some("packet-1".to_string()),
+                latest_packet_token_budget: Some(4_000),
+                latest_packet_query: Some("Operator console redesign".to_string()),
+                node_kind_counts: BTreeMap::new(),
+                depth_counts: BTreeMap::new(),
+            }),
+        };
+
+        let candidate = latest_unpromoted_summary_candidate_from_graph(&graph);
+
+        assert_eq!(
+            candidate,
+            Some(OpenBrainDurableMemoryCandidate {
+                summary_node_id: "summary-new".to_string(),
+                title: "Operator console redesign".to_string(),
+                content: "new summary content".to_string(),
+                source_event_ids: vec!["event-2".to_string(), "event-3".to_string()],
+                source_token_count: Some(42_000),
+                summary_token_count: Some(1_200),
+            })
+        );
+    }
+
+    #[test]
+    fn latest_unpromoted_summary_candidate_returns_none_when_all_summaries_promoted() {
+        let graph = OpenBrainGraphView {
+            thread_id: "thread-1".to_string(),
+            project_key: None,
+            scope_key: None,
+            nodes: vec![serde_json::json!({
+                "node_id": "summary-only",
+                "node_kind": "summary_d0",
+                "title": "LCM leaf summary",
+                "content": "summary",
+                "source_event_ids": ["event-1"],
+                "src_tok": 22_000,
+                "desc_tok": 1_100
+            })],
+            edges: vec![serde_json::json!({
+                "relationship_type": "PROMOTES_TO",
+                "to_node_id": "summary-only"
+            })],
+            fresh_tail: Vec::new(),
+            context_packets: Vec::new(),
+            status: None,
+        };
+
+        assert_eq!(latest_unpromoted_summary_candidate_from_graph(&graph), None);
     }
 }

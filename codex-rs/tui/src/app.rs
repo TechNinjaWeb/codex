@@ -495,14 +495,36 @@ fn emit_system_bwrap_warning(app_event_tx: &AppEventSender, config: &Config) {
 }
 
 fn lcm_json_str<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
-    keys.iter()
-        .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
+    lcm_json_value(value, keys).and_then(serde_json::Value::as_str)
 }
 
 fn lcm_json_usize(value: &serde_json::Value, keys: &[&str]) -> Option<usize> {
-    keys.iter()
-        .find_map(|key| value.get(*key).and_then(serde_json::Value::as_u64))
+    lcm_json_value(value, keys)
+        .and_then(serde_json::Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
+}
+
+fn lcm_json_value<'a>(
+    value: &'a serde_json::Value,
+    keys: &[&str],
+) -> Option<&'a serde_json::Value> {
+    for key in keys {
+        if let Some(found) = value.get(*key) {
+            return Some(found);
+        }
+    }
+
+    for nested_key in ["node", "event", "payload", "source_ref", "metadata"] {
+        if let Some(nested) = value.get(nested_key) {
+            for key in keys {
+                if let Some(found) = nested.get(*key) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn lcm_preview_text(raw: &str, max_len: usize) -> String {
@@ -598,12 +620,18 @@ fn lcm_packet_summary(packet: &serde_json::Value) -> String {
     let item_count = lcm_json_usize(packet, &["itemCount", "item_count"])
         .map(|value| format!(" items={value}"))
         .unwrap_or_default();
+    let selected_tokens = lcm_json_usize(packet, &["selectedTokenCount", "selected_token_count"])
+        .map(|value| format!(" sel={value}"))
+        .unwrap_or_default();
+    let truncated_items = lcm_json_usize(packet, &["truncatedItemCount", "truncated_item_count"])
+        .map(|value| format!(" trunc={value}"))
+        .unwrap_or_default();
     let query = lcm_json_str(packet, &["query", "source_query"])
         .map(|value| format!(" query={}", lcm_preview_text(value, 32)))
         .unwrap_or_default();
     let title = lcm_node_title(packet);
     format!(
-        "{kind}{depth}{src_tok}{desc_tok} {}{token_budget}{item_count}{query} {}",
+        "{kind}{depth}{src_tok}{desc_tok} {}{token_budget}{item_count}{selected_tokens}{truncated_items}{query} {}",
         lcm_preview_text(&id, 12),
         lcm_preview_text(&title, 72)
     )
@@ -645,6 +673,63 @@ fn lcm_fresh_tail_summary(event: &serde_json::Value) -> String {
         "{kind}{seq} {}{role}{tool_call_id}{linked_tool_call_id}{content}",
         lcm_preview_text(&id, 12)
     )
+}
+
+fn lcm_candidate_ids(value: &serde_json::Value) -> Vec<String> {
+    let mut ids = Vec::new();
+    for key in ["node_id", "packet_node_id", "id", "packet_id"] {
+        if let Some(id) = lcm_json_str(value, &[key]) {
+            if !ids.iter().any(|existing| existing == id) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids
+}
+
+fn lcm_resolve_node_id_from_graph(
+    graph: &serde_json::Value,
+    raw_node_id: &str,
+) -> Result<String, String> {
+    let needle = raw_node_id
+        .trim()
+        .trim_end_matches("...")
+        .trim_end_matches('…');
+    if needle.is_empty() {
+        return Err("node id is empty".to_string());
+    }
+
+    let mut matches = Vec::<String>::new();
+    let mut consider = |items: Option<&Vec<serde_json::Value>>| {
+        for item in items.into_iter().flatten() {
+            let Some(canonical) =
+                lcm_json_str(item, &["node_id", "packet_node_id", "id"]).map(str::to_string)
+            else {
+                continue;
+            };
+            if lcm_candidate_ids(item)
+                .into_iter()
+                .any(|candidate| candidate == needle || candidate.starts_with(needle))
+                && !matches.iter().any(|existing| existing == &canonical)
+            {
+                matches.push(canonical);
+            }
+        }
+    };
+
+    consider(graph.get("nodes").and_then(serde_json::Value::as_array));
+    consider(
+        graph
+            .get("contextPackets")
+            .or_else(|| graph.get("context_packets"))
+            .and_then(serde_json::Value::as_array),
+    );
+
+    match matches.len() {
+        0 => Err(format!("no LCM node matches `{needle}`")),
+        1 => Ok(matches.remove(0)),
+        _ => Err(format!("multiple LCM nodes match `{needle}`")),
+    }
 }
 
 fn lcm_history_cell(title: &str, lines: Vec<String>) -> history_cell::PlainHistoryCell {
@@ -1893,12 +1978,6 @@ impl App {
                     .thread_context_graph(thread_id, /*include_superseded*/ false, Some(64))
                     .await
                     .wrap_err("failed to load LCM graph")?;
-                let packets = app_server
-                    .thread_context_packet(
-                        thread_id, /*query*/ None, /*token_budget*/ None,
-                    )
-                    .await
-                    .wrap_err("failed to load LCM context packets")?;
                 let mut lines = vec![
                     format!("thread: {}", thread.id),
                     format!("engine: {engine}"),
@@ -1939,15 +2018,19 @@ impl App {
                             .map(|event| format!("  - {}", lcm_fresh_tail_summary(event))),
                     );
                 }
-                let packet_items = packets
-                    .packets
+                let packet_items = graph
+                    .graph
+                    .get("contextPackets")
+                    .or_else(|| graph.graph.get("context_packets"))
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
                     .unwrap_or_default()
                     .into_iter()
                     .take(3)
                     .map(|packet| format!("  - {}", lcm_packet_summary(&packet)))
                     .collect::<Vec<_>>();
                 if !packet_items.is_empty() {
-                    lines.push("recent packet summaries:".to_string());
+                    lines.push("recent packets:".to_string());
                     lines.extend(packet_items);
                 }
                 lcm_history_cell("LCM Overview", lines)
@@ -2020,10 +2103,16 @@ impl App {
                 lcm_history_cell("LCM Search", lines)
             }
             LcmCommand::Expand(node_id) => {
+                let graph = app_server
+                    .thread_context_graph(thread_id, /*include_superseded*/ false, Some(128))
+                    .await
+                    .wrap_err("failed to load LCM graph for node expansion")?;
+                let resolved_node_id = lcm_resolve_node_id_from_graph(&graph.graph, &node_id)
+                    .map_err(|err| color_eyre::eyre::eyre!(err))?;
                 let expansion = app_server
                     .thread_context_expand(
                         thread_id,
-                        Some(node_id.clone()),
+                        Some(resolved_node_id.clone()),
                         /*query*/ None,
                         Some(8),
                         Some(4000),
@@ -2033,12 +2122,18 @@ impl App {
                 let description = app_server
                     .thread_context_describe(
                         thread_id,
-                        node_id.clone(),
+                        resolved_node_id.clone(),
                         /*include_superseded*/ false,
                     )
                     .await
                     .wrap_err("failed to describe LCM node")?;
-                let mut lines = vec![format!("thread: {}", thread.id), format!("node: {node_id}")];
+                let mut lines = vec![
+                    format!("thread: {}", thread.id),
+                    format!("node: {resolved_node_id}"),
+                ];
+                if resolved_node_id != node_id {
+                    lines.push(format!("input: {node_id}"));
+                }
                 if let Some(node) = expansion.result.get("node") {
                     lines.push(format!("focus: {}", lcm_node_summary(node)));
                 }
@@ -8072,6 +8167,93 @@ mod tests {
             !summary.contains("d0"),
             "fresh tail summary should not use graph-node depth formatting: {summary}"
         );
+    }
+
+    #[test]
+    fn lcm_packet_summary_reads_nested_graph_packet_shape() {
+        let packet = serde_json::json!({
+            "kind": "packet",
+            "packet_id": "681340e6-c6c3-4016-9a5a-fd12420790ee",
+            "packet_node_id": "0fa6f22e-6cfe-4f2c-b1de-2f5de3cd74da",
+            "item_count": 3,
+            "token_budget": 4_000,
+            "selected_token_count": 3_855,
+            "truncated_item_count": 13,
+            "node": {
+                "title": "Context packet"
+            }
+        });
+
+        let summary = lcm_packet_summary(&packet);
+
+        assert!(summary.contains("packet"));
+        assert!(summary.contains("681340e6"));
+        assert!(summary.contains("tok=4000"));
+        assert!(summary.contains("items=3"));
+        assert!(summary.contains("sel=3855"));
+        assert!(summary.contains("trunc=13"));
+        assert!(summary.contains("Context packet"));
+    }
+
+    #[test]
+    fn lcm_fresh_tail_summary_reads_nested_event_shape() {
+        let event = serde_json::json!({
+            "kind": "event",
+            "event_sequence": 587,
+            "event": {
+                "role": "assistant",
+                "content": "Nested event payload should still render."
+            },
+            "source_ref": {
+                "id": "f44a75b1-6f48-4fda-9b07-94e173385e71"
+            }
+        });
+
+        let summary = lcm_fresh_tail_summary(&event);
+
+        assert!(summary.contains("event"));
+        assert!(summary.contains("f44a75b1"));
+        assert!(summary.contains("#587"));
+        assert!(summary.contains("role=assistant"));
+        assert!(summary.contains("Nested event payload"));
+    }
+
+    #[test]
+    fn lcm_expand_accepts_unique_truncated_node_ids() {
+        let graph = serde_json::json!({
+            "nodes": [
+                {
+                    "node_id": "d713223e-2265-4bf7-becd-1ccde38c81d9",
+                    "node_kind": "summary_d0"
+                },
+                {
+                    "packet_node_id": "0fa6f22e-6cfe-4f2c-b1de-2f5de3cd74da",
+                    "node_kind": "context_packet"
+                }
+            ]
+        });
+
+        let resolved =
+            lcm_resolve_node_id_from_graph(&graph, "d713223e-22…").expect("resolved node id");
+
+        assert_eq!(resolved, "d713223e-2265-4bf7-becd-1ccde38c81d9");
+    }
+
+    #[test]
+    fn lcm_expand_accepts_ascii_ellipsis_node_ids() {
+        let graph = serde_json::json!({
+            "nodes": [
+                {
+                    "node_id": "a7c90600-345e-43d1-b391-953fb7ae2b74",
+                    "node_kind": "summary_d0"
+                }
+            ]
+        });
+
+        let resolved =
+            lcm_resolve_node_id_from_graph(&graph, "a7c90600-34...").expect("resolved node id");
+
+        assert_eq!(resolved, "a7c90600-345e-43d1-b391-953fb7ae2b74");
     }
 
     #[tokio::test]
