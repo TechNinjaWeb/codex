@@ -65,10 +65,6 @@ async fn run_lcm_compact_task_inner(
         ));
     };
 
-    let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
-    sess.emit_turn_item_started(&turn_context, &compaction_item)
-        .await;
-
     let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.raw_items();
     let (head, tail) = split_history_for_lcm(history_items, runtime.lcm().fresh_tail_count);
@@ -96,10 +92,13 @@ async fn run_lcm_compact_task_inner(
             format!("LCM compaction skipped: {reason}."),
         )
         .await;
-        sess.emit_turn_item_completed(&turn_context, compaction_item)
-            .await;
         return Ok(());
     }
+
+    let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
+    sess.emit_turn_item_started(&turn_context, &compaction_item)
+        .await;
+
     let leaf_summary = if !summary_text.trim().is_empty() {
         Some(
             runtime
