@@ -768,6 +768,7 @@ pub(crate) struct ChatWidget {
     initial_user_message: Option<UserMessage>,
     status_account_display: Option<StatusAccountDisplay>,
     token_info: Option<TokenUsageInfo>,
+    context_window_stale: bool,
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     next_status_refresh_request_id: u64,
@@ -2603,6 +2604,7 @@ impl ChatWidget {
         match info {
             Some(info) => self.apply_token_info(info),
             None => {
+                self.context_window_stale = false;
                 self.bottom_pane
                     .set_context_window(/*percent*/ None, /*used_tokens*/ None);
                 self.token_info = None;
@@ -2635,6 +2637,7 @@ impl ChatWidget {
     fn apply_token_info(&mut self, info: TokenUsageInfo) {
         let percent = self.context_remaining_percent(&info);
         let used_tokens = self.context_used_tokens(&info, percent.is_some());
+        self.context_window_stale = false;
         self.bottom_pane.set_context_window(percent, used_tokens);
         self.token_info = Some(info);
     }
@@ -2659,12 +2662,19 @@ impl ChatWidget {
             match saved {
                 Some(info) => self.apply_token_info(info),
                 None => {
+                    self.context_window_stale = false;
                     self.bottom_pane
                         .set_context_window(/*percent*/ None, /*used_tokens*/ None);
                     self.token_info = None;
                 }
             }
         }
+    }
+
+    fn mark_context_window_stale(&mut self) {
+        self.context_window_stale = true;
+        self.bottom_pane
+            .set_context_window(/*percent*/ None, /*used_tokens*/ None);
     }
 
     pub(crate) fn on_rate_limit_snapshot(&mut self, snapshot: Option<RateLimitSnapshot>) {
@@ -4815,6 +4825,7 @@ impl ChatWidget {
             initial_user_message,
             status_account_display,
             token_info: None,
+            context_window_stale: false,
             rate_limit_snapshots_by_limit_id: BTreeMap::new(),
             refreshing_status_outputs: Vec::new(),
             next_status_refresh_request_id: 0,
@@ -6278,7 +6289,12 @@ impl ChatWidget {
             | ServerNotification::WindowsWorldWritableWarning(_)
             | ServerNotification::WindowsSandboxSetupCompleted(_)
             | ServerNotification::AccountLoginCompleted(_) => {}
-            ServerNotification::ContextCompacted(_) => {}
+            ServerNotification::ContextCompacted(_) => {
+                if !from_replay {
+                    self.mark_context_window_stale();
+                    self.refresh_status_surfaces();
+                }
+            }
         }
     }
 
@@ -6763,7 +6779,12 @@ impl ChatWidget {
                 self.on_entered_review_mode(review_request, from_replay)
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
-            EventMsg::ContextCompacted(_) => {}
+            EventMsg::ContextCompacted(_) => {
+                if !from_replay {
+                    self.mark_context_window_stale();
+                    self.refresh_status_surfaces();
+                }
+            }
             EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
                 call_id,
                 model,
@@ -7203,6 +7224,9 @@ impl ChatWidget {
     }
 
     fn status_line_context_remaining_percent(&self) -> Option<i64> {
+        if self.context_window_stale {
+            return None;
+        }
         let Some(context_window) = self.status_line_context_window_size() else {
             return Some(100);
         };

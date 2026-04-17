@@ -701,17 +701,6 @@ pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'st
     compose_passive_footer_status_line(props, /*allow_while_running*/ false)
 }
 
-/// Build the contextual status line even while a task is active.
-///
-/// This is used by the live status row so that the same status-line/context
-/// signal remains visible during streaming instead of disappearing behind the
-/// working indicator.
-pub(crate) fn passive_footer_status_line_while_running(
-    props: &FooterProps,
-) -> Option<Line<'static>> {
-    compose_passive_footer_status_line(props, /*allow_while_running*/ true)
-}
-
 /// Whether the current footer mode allows contextual information to replace instructional hints.
 ///
 /// In practice this means the composer is idle, or it has a draft but is not currently running a

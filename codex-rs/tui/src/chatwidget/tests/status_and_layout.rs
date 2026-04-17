@@ -139,6 +139,39 @@ async fn status_line_context_items_render_compact_meter() {
 }
 
 #[tokio::test]
+async fn context_meter_hides_after_compaction_until_fresh_token_update() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    let context_window = 13_000;
+    let pre_compact_tokens = 12_700;
+
+    chat.handle_codex_event(Event {
+        id: "token-before".into(),
+        msg: EventMsg::TokenCount(TokenCountEvent {
+            info: Some(make_token_info(pre_compact_tokens, context_window)),
+            rate_limits: None,
+        }),
+    });
+
+    assert_eq!(chat.bottom_pane.context_window_percent(), Some(30));
+    assert_eq!(
+        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ContextRemaining),
+        Some("Context [█▌   ]".to_string())
+    );
+
+    chat.handle_codex_event(Event {
+        id: "compacted".into(),
+        msg: EventMsg::ContextCompacted(Default::default()),
+    });
+
+    assert_eq!(chat.bottom_pane.context_window_percent(), None);
+    assert_eq!(
+        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ContextRemaining),
+        None
+    );
+}
+
+#[tokio::test]
 async fn helpers_are_available_and_do_not_panic() {
     let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
     let tx = AppEventSender::new(tx_raw);

@@ -857,19 +857,12 @@ impl BottomPane {
 
     /// Copy unified-exec summary text into the active status row, if any.
     ///
-    /// This keeps status-line inline text synchronized without forcing the
-    /// standalone unified-exec footer row to be visible.
+    /// The configurable status-line/context signal stays anchored in the
+    /// footer; the running row only mirrors unified-exec activity.
     fn sync_status_inline_message(&mut self) {
         if let Some(status) = self.status.as_mut() {
-            let status_context = self.composer.status_inline_context_text();
             let exec_summary = self.unified_exec_footer.summary_text();
-            let inline_message = match (status_context, exec_summary) {
-                (Some(context), Some(summary)) => Some(format!("{context} · {summary}")),
-                (Some(context), None) => Some(context),
-                (None, Some(summary)) => Some(summary),
-                (None, None) => None,
-            };
-            status.update_inline_message(inline_message);
+            status.update_inline_message(exec_summary);
         }
     }
 
@@ -1663,7 +1656,7 @@ mod tests {
     }
 
     #[test]
-    fn running_status_keeps_context_signal_visible() {
+    fn running_status_keeps_unified_exec_summary_visible() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
         let mut pane = BottomPane::new(BottomPaneParams {
@@ -1685,9 +1678,6 @@ mod tests {
 
         let status = pane.status.as_ref().expect("status indicator");
         let inline = status.inline_message().expect("inline message");
-        assert!(inline.contains("gpt-5.4 high"));
-        assert!(inline.contains("~/src/project"));
-        assert!(inline.contains("Context [█▋   ]"));
         assert!(inline.contains("background terminal"));
     }
 

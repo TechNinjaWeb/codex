@@ -166,7 +166,6 @@ use super::footer::footer_line_width;
 use super::footer::inset_footer_hint_area;
 use super::footer::max_left_width_for_right;
 use super::footer::passive_footer_status_line;
-use super::footer::passive_footer_status_line_while_running;
 use super::footer::render_context_right;
 use super::footer::render_footer_from_props;
 use super::footer::render_footer_hint_items;
@@ -1129,6 +1128,7 @@ impl ChatComposer {
             .collect()
     }
 
+    #[cfg(test)]
     fn line_plain_text(line: &Line<'_>) -> String {
         line.spans
             .iter()
@@ -1139,11 +1139,6 @@ impl ChatComposer {
     #[cfg(test)]
     pub(crate) fn status_line_text(&self) -> Option<String> {
         self.status_line_value.as_ref().map(Self::line_plain_text)
-    }
-
-    pub(crate) fn status_inline_context_text(&self) -> Option<String> {
-        passive_footer_status_line_while_running(&self.footer_props())
-            .map(|line| Self::line_plain_text(&line))
     }
 
     pub(crate) fn local_images(&self) -> Vec<LocalImageAttachment> {
