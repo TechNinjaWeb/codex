@@ -21,6 +21,9 @@ use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 
+const MIN_LCM_COMPACTION_SOURCE_TOKENS: u32 = 4_096;
+const MIN_LCM_COMPACTION_SAVINGS_TOKENS: u32 = 2_048;
+
 pub(crate) async fn run_inline_lcm_auto_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
@@ -81,6 +84,22 @@ async fn run_lcm_compact_task_inner(
         )
     };
     let summary_token_count = approx_token_count(&summary_text) as u32;
+    if let Some(reason) = lcm_compaction_skip_reason(source_token_count, summary_token_count) {
+        tracing::info!(
+            source_token_count,
+            summary_token_count,
+            reason,
+            "skipping low-value Open Brain LCM compaction"
+        );
+        sess.notify_background_event(
+            turn_context.as_ref(),
+            format!("LCM compaction skipped: {reason}."),
+        )
+        .await;
+        sess.emit_turn_item_completed(&turn_context, compaction_item)
+            .await;
+        return Ok(());
+    }
     let leaf_summary = if !summary_text.trim().is_empty() {
         Some(
             runtime
@@ -170,6 +189,27 @@ async fn run_lcm_compact_task_inner(
     sess.emit_turn_item_completed(&turn_context, compaction_item)
         .await;
     Ok(())
+}
+
+fn lcm_compaction_skip_reason(source_token_count: u32, summary_token_count: u32) -> Option<String> {
+    if source_token_count == 0 {
+        return Some("nothing beyond the fresh tail is compactable".to_string());
+    }
+
+    if source_token_count < MIN_LCM_COMPACTION_SOURCE_TOKENS {
+        return Some(format!(
+            "source head is only {source_token_count} tokens; minimum useful compaction size is {MIN_LCM_COMPACTION_SOURCE_TOKENS}"
+        ));
+    }
+
+    let estimated_savings = source_token_count.saturating_sub(summary_token_count);
+    if estimated_savings < MIN_LCM_COMPACTION_SAVINGS_TOKENS {
+        return Some(format!(
+            "projected savings are only {estimated_savings} tokens; minimum useful savings are {MIN_LCM_COMPACTION_SAVINGS_TOKENS}"
+        ));
+    }
+
+    None
 }
 
 fn lcm_query(input: &[UserInput], history_items: &[ResponseItem]) -> Option<String> {
@@ -609,6 +649,7 @@ mod tests {
     use super::LcmMemoryPromotionMode;
     use super::context_history_message;
     use super::latest_user_message_title;
+    use super::lcm_compaction_skip_reason;
     use super::lcm_resolve_memory_promotion_mode;
     use super::packet_items_to_history;
     use super::split_history_for_lcm;
@@ -657,6 +698,33 @@ mod tests {
         assert!(matches!(tail[0], ResponseItem::FunctionCall { .. }));
         assert!(matches!(tail[1], ResponseItem::Reasoning { .. }));
         assert!(matches!(tail[2], ResponseItem::FunctionCallOutput { .. }));
+    }
+
+    #[test]
+    fn compaction_skip_reason_rejects_tiny_head() {
+        assert_eq!(
+            lcm_compaction_skip_reason(2_628, 1_207),
+            Some(
+                "source head is only 2628 tokens; minimum useful compaction size is 4096"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn compaction_skip_reason_rejects_low_savings() {
+        assert_eq!(
+            lcm_compaction_skip_reason(4_800, 3_000),
+            Some(
+                "projected savings are only 1800 tokens; minimum useful savings are 2048"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn compaction_skip_reason_allows_material_compaction() {
+        assert_eq!(lcm_compaction_skip_reason(8_300, 1_207), None);
     }
 
     #[test]

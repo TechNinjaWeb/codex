@@ -907,7 +907,7 @@ pub(crate) fn context_window_line(percent: Option<i64>, used_tokens: Option<i64>
 
     Line::from(vec![
         Span::from("Context ").dim(),
-        Span::from(format_context_meter(100)).dim(),
+        Span::from(format_context_meter(0)).dim(),
     ])
 }
 

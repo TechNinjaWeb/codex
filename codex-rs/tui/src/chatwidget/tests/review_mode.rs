@@ -303,8 +303,8 @@ async fn review_restores_context_window_indicator() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
 
     let context_window = 13_000;
-    let pre_review_tokens = 12_700; // ~30% remaining after subtracting baseline.
-    let review_tokens = 12_030; // ~97% remaining after subtracting baseline.
+    let pre_review_tokens = 12_700; // ~70% used after subtracting baseline.
+    let review_tokens = 12_030; // ~3% used after subtracting baseline.
 
     chat.handle_codex_event(Event {
         id: "token-before".into(),
@@ -313,7 +313,7 @@ async fn review_restores_context_window_indicator() {
             rate_limits: None,
         }),
     });
-    assert_eq!(chat.bottom_pane.context_window_percent(), Some(30));
+    assert_eq!(chat.bottom_pane.context_window_percent(), Some(70));
 
     chat.handle_codex_event(Event {
         id: "review-start".into(),
@@ -332,7 +332,7 @@ async fn review_restores_context_window_indicator() {
             rate_limits: None,
         }),
     });
-    assert_eq!(chat.bottom_pane.context_window_percent(), Some(97));
+    assert_eq!(chat.bottom_pane.context_window_percent(), Some(3));
 
     chat.handle_codex_event(Event {
         id: "review-end".into(),
@@ -342,7 +342,7 @@ async fn review_restores_context_window_indicator() {
     });
     let _ = drain_insert_history(&mut rx);
 
-    assert_eq!(chat.bottom_pane.context_window_percent(), Some(30));
+    assert_eq!(chat.bottom_pane.context_window_percent(), Some(70));
     assert!(!chat.is_review_mode);
 }
 

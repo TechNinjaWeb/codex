@@ -142,8 +142,8 @@ const CONTEXT_METER_FULL: char = '█';
 const CONTEXT_METER_EMPTY: char = ' ';
 const CONTEXT_METER_PARTIALS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 
-pub(crate) fn format_context_meter(percent_remaining: i64) -> String {
-    let clamped = percent_remaining.clamp(0, 100) as usize;
+pub(crate) fn format_context_meter(percent_used: i64) -> String {
+    let clamped = percent_used.clamp(0, 100) as usize;
     let total_units = CONTEXT_METER_SLOTS * 8;
     let filled_units = (clamped * total_units + 50) / 100;
     let full_slots = filled_units / 8;

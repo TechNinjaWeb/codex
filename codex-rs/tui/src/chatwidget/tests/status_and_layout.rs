@@ -16,7 +16,7 @@ async fn token_count_none_resets_context_indicator() {
             rate_limits: None,
         }),
     });
-    assert_eq!(chat.bottom_pane.context_window_percent(), Some(30));
+    assert_eq!(chat.bottom_pane.context_window_percent(), Some(70));
 
     chat.handle_codex_event(Event {
         id: "token-cleared".into(),
@@ -83,7 +83,7 @@ async fn turn_started_uses_runtime_context_window_before_first_token_count() {
         chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ContextWindowSize),
         Some("950K window".to_string())
     );
-    assert_eq!(chat.bottom_pane.context_window_percent(), Some(100));
+    assert_eq!(chat.bottom_pane.context_window_percent(), Some(0));
 
     chat.add_status_output(
         /*refreshing_rate_limits*/ false, /*request_id*/ None,
@@ -130,11 +130,11 @@ async fn status_line_context_items_render_compact_meter() {
 
     assert_eq!(
         chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ContextRemaining),
-        Some("Context [█▌   ]".to_string())
+        Some("Context [███▌ ]".to_string())
     );
     assert_eq!(
         chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ContextUsed),
-        Some("Context [█▌   ]".to_string())
+        Some("Context [███▌ ]".to_string())
     );
 }
 
@@ -153,10 +153,10 @@ async fn context_meter_hides_after_compaction_until_fresh_token_update() {
         }),
     });
 
-    assert_eq!(chat.bottom_pane.context_window_percent(), Some(30));
+    assert_eq!(chat.bottom_pane.context_window_percent(), Some(70));
     assert_eq!(
         chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ContextRemaining),
-        Some("Context [█▌   ]".to_string())
+        Some("Context [███▌ ]".to_string())
     );
 
     chat.handle_codex_event(Event {
@@ -926,14 +926,14 @@ async fn status_line_invalid_items_warn_once() {
 }
 
 #[tokio::test]
-async fn status_line_context_used_renders_labeled_percent() {
+async fn status_line_context_used_renders_compact_meter() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.config.tui_status_line = Some(vec!["context-used".to_string()]);
 
     chat.refresh_status_line();
 
-    assert_eq!(status_line_text(&chat), Some("Context 0% used".to_string()));
+    assert_eq!(status_line_text(&chat), Some("Context [     ]".to_string()));
     assert!(
         drain_insert_history(&mut rx).is_empty(),
         "context-used should remain a valid status line item"
@@ -941,17 +941,14 @@ async fn status_line_context_used_renders_labeled_percent() {
 }
 
 #[tokio::test]
-async fn status_line_context_remaining_renders_labeled_percent() {
+async fn status_line_context_remaining_renders_compact_meter() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.config.tui_status_line = Some(vec!["context-remaining".to_string()]);
 
     chat.refresh_status_line();
 
-    assert_eq!(
-        status_line_text(&chat),
-        Some("Context 100% left".to_string())
-    );
+    assert_eq!(status_line_text(&chat), Some("Context [     ]".to_string()));
     assert!(
         drain_insert_history(&mut rx).is_empty(),
         "context-remaining should remain a valid status line item"
@@ -966,7 +963,7 @@ async fn status_line_legacy_context_usage_renders_context_used_percent() {
 
     chat.refresh_status_line();
 
-    assert_eq!(status_line_text(&chat), Some("Context 0% used".to_string()));
+    assert_eq!(status_line_text(&chat), Some("Context [     ]".to_string()));
     assert!(
         drain_insert_history(&mut rx).is_empty(),
         "legacy context-usage should remain a valid status line item"
@@ -1085,7 +1082,7 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
 
     assert_eq!(
         status_line_text(&chat),
-        Some(format!("gpt-5.4 xhigh fast · Context 0% used · {test_cwd}"))
+        Some(format!("gpt-5.4 xhigh fast · Context [     ] · {test_cwd}"))
     );
 
     chat.set_model("gpt-5.3-codex");
@@ -1094,7 +1091,7 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
     assert_eq!(
         status_line_text(&chat),
         Some(format!(
-            "gpt-5.3-codex xhigh · Context 0% used · {test_cwd}"
+            "gpt-5.3-codex xhigh · Context [     ] · {test_cwd}"
         ))
     );
 }
