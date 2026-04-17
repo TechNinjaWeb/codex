@@ -342,6 +342,24 @@ pub struct OpenBrainDurableMemoryCandidate {
     pub summary_token_count: Option<u32>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct OpenBrainProjectMemory {
+    pub node_id: String,
+    pub node_kind: String,
+    pub title: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_thought_id: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct OpenBrainSearchResults {
     pub query: String,
@@ -745,6 +763,21 @@ impl OpenBrainRuntime {
         });
         self.client
             .rpc_json("ob_promote_durable_memory", &payload)
+            .await
+    }
+
+    pub async fn list_project_durable_memories(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<OpenBrainProjectMemory>, OpenBrainClientError> {
+        let payload = serde_json::json!({
+            "p_session_id": self.session_id,
+            "p_project_key": self.project_key,
+            "p_scope_key": self.scope_key,
+            "p_limit": limit.max(1),
+        });
+        self.client
+            .rpc_json("ob_list_project_durable_memories", &payload)
             .await
     }
 

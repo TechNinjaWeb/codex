@@ -35,6 +35,7 @@ pub(crate) struct SessionState {
     granted_permissions: Option<PermissionProfile>,
     last_context_packet_id: Option<String>,
     open_brain_warning_emitted: bool,
+    open_brain_project_bootstrap_pending: bool,
 }
 
 impl SessionState {
@@ -55,6 +56,7 @@ impl SessionState {
             granted_permissions: None,
             last_context_packet_id: None,
             open_brain_warning_emitted: false,
+            open_brain_project_bootstrap_pending: false,
         }
     }
 
@@ -225,6 +227,16 @@ impl SessionState {
 
     pub(crate) fn set_last_context_packet_id(&mut self, packet_id: Option<String>) {
         self.last_context_packet_id = packet_id;
+    }
+
+    pub(crate) fn set_open_brain_project_bootstrap_pending(&mut self, pending: bool) {
+        self.open_brain_project_bootstrap_pending = pending;
+    }
+
+    pub(crate) fn take_open_brain_project_bootstrap_pending(&mut self) -> bool {
+        let pending = self.open_brain_project_bootstrap_pending;
+        self.open_brain_project_bootstrap_pending = false;
+        pending
     }
 
     pub(crate) fn mark_open_brain_warning_emitted(&mut self) -> bool {

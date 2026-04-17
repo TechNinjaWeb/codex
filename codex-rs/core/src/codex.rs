@@ -91,6 +91,7 @@ use codex_open_brain::OpenBrainExpandQueryResults;
 use codex_open_brain::OpenBrainExpansion;
 use codex_open_brain::OpenBrainGraphView;
 use codex_open_brain::OpenBrainNodeDescription;
+use codex_open_brain::OpenBrainProjectMemory;
 use codex_open_brain::OpenBrainRuntime;
 use codex_open_brain::OpenBrainRuntimeError;
 use codex_open_brain::OpenBrainSearchResults;
@@ -2137,7 +2138,13 @@ impl Session {
                 ))
                 .await;
         session_configuration.thread_name = thread_name.clone();
-        let state = SessionState::new(session_configuration.clone());
+        let mut state = SessionState::new(session_configuration.clone());
+        state.set_open_brain_project_bootstrap_pending(
+            matches!(
+                &initial_history,
+                InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_)
+            ) && session_configuration.context_engine == ContextEngine::OpenBrainLcm,
+        );
         let managed_network_requirements_enabled = config.managed_network_requirements_enabled();
         let network_approval = Arc::new(NetworkApprovalService::default());
         // The managed proxy can call back into core for allowlist-miss decisions.
@@ -4224,7 +4231,14 @@ impl Session {
         };
         let should_inject_full_context = reference_context_item.is_none();
         let context_items = if should_inject_full_context {
-            self.build_initial_context(turn_context).await
+            let mut items = self.build_initial_context(turn_context).await;
+            if let Some(bootstrap_item) = self
+                .take_open_brain_project_bootstrap_item(turn_context)
+                .await
+            {
+                items.push(bootstrap_item);
+            }
+            items
         } else {
             // Steady-state path: append only context diffs to minimize token overhead.
             self.build_settings_update_items(reference_context_item.as_ref(), turn_context)
@@ -4244,6 +4258,112 @@ impl Session {
         // context items. This keeps later runtime diffing aligned with the current turn state.
         let mut state = self.state.lock().await;
         state.set_reference_context_item(Some(turn_context_item));
+    }
+
+    async fn take_open_brain_project_bootstrap_item(
+        &self,
+        turn_context: &TurnContext,
+    ) -> Option<ResponseItem> {
+        let runtime = {
+            let mut state = self.state.lock().await;
+            if !state.take_open_brain_project_bootstrap_pending() {
+                return None;
+            }
+            if state.session_configuration.context_engine != ContextEngine::OpenBrainLcm {
+                return None;
+            }
+            state.session_configuration.open_brain_runtime.clone()
+        }?;
+
+        match runtime.list_project_durable_memories(6).await {
+            Ok(memories) => crate::context_manager::updates::build_contextual_user_message(vec![
+                Self::render_open_brain_project_bootstrap_section(
+                    runtime.project_key(),
+                    turn_context.cwd.to_string_lossy().as_ref(),
+                    &memories,
+                ),
+            ]),
+            Err(err) => {
+                warn!("failed to load Open Brain project bootstrap memories: {err}");
+                None
+            }
+        }
+    }
+
+    fn render_open_brain_project_bootstrap_section(
+        project_key: &str,
+        cwd: &str,
+        memories: &[OpenBrainProjectMemory],
+    ) -> String {
+        let mut lines = vec![
+            "<open_brain_project_bootstrap>".to_string(),
+            format!("source = project_scoped_durable_memory"),
+            format!("project_key = {project_key}"),
+            format!("cwd = {cwd}"),
+        ];
+
+        let bootstrap_memories = memories
+            .iter()
+            .filter_map(Self::open_brain_bootstrap_memory_entry)
+            .collect::<Vec<_>>();
+
+        if bootstrap_memories.is_empty() {
+            lines.push("memories = none".to_string());
+        } else {
+            lines.push("memories:".to_string());
+            for memory in bootstrap_memories {
+                lines.push(format!("- [{}] {}", memory.0, memory.1));
+                if let Some(body) = memory.2 {
+                    lines.push(format!("  {}", body.replace('\n', "\n  ")));
+                }
+            }
+        }
+
+        lines.push(
+            "Use these recovered project memories as the startup baseline before repo inspection."
+                .to_string(),
+        );
+        lines.push("</open_brain_project_bootstrap>".to_string());
+        lines.join("\n")
+    }
+
+    fn open_brain_bootstrap_memory_entry(
+        memory: &OpenBrainProjectMemory,
+    ) -> Option<(String, String, Option<String>)> {
+        let title = memory.title.trim();
+        let normalized_title = title.to_ascii_lowercase();
+        if title.is_empty()
+            || matches!(
+                normalized_title.as_str(),
+                "lcm durable memory" | "durable memory" | "project durable memory"
+            )
+        {
+            return None;
+        }
+
+        Some((
+            memory.node_id.clone(),
+            title.to_string(),
+            Self::open_brain_bootstrap_body(memory.content.trim()),
+        ))
+    }
+
+    fn open_brain_bootstrap_body(content: &str) -> Option<String> {
+        if content.is_empty()
+            || content.starts_with("assistant:")
+            || content.contains("<context_engine>")
+            || content.contains("<permissions instructions>")
+        {
+            return None;
+        }
+
+        let truncated = if content.chars().count() > 280 {
+            let prefix = content.chars().take(277).collect::<String>();
+            format!("{prefix}...")
+        } else {
+            content.to_string()
+        };
+        Some(truncated)
     }
 
     pub(crate) async fn update_token_usage_info(

@@ -59,6 +59,7 @@ use codex_execpolicy::Decision;
 use codex_execpolicy::NetworkRuleProtocol;
 use codex_execpolicy::Policy;
 use codex_network_proxy::NetworkProxyConfig;
+use codex_open_brain::OpenBrainProjectMemory;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
@@ -4163,6 +4164,43 @@ async fn build_initial_context_uses_previous_realtime_state() {
             .any(|text| text.contains("<realtime_conversation>")),
         "did not expect a duplicate realtime update, got {resumed_developer_texts:?}"
     );
+}
+
+#[test]
+fn render_open_brain_project_bootstrap_section_lists_recovered_memories() {
+    let section = Session::render_open_brain_project_bootstrap_section(
+        "/tmp/project",
+        "/tmp/project",
+        &[
+            OpenBrainProjectMemory {
+                node_id: "memory-1".to_string(),
+                node_kind: "durable_memory".to_string(),
+                title: "Architecture direction".to_string(),
+                content: "Prefer Open Brain durable memories as the startup baseline.".to_string(),
+                memory_key: None,
+                project_key: Some("/tmp/project".to_string()),
+                scope_key: Some("/tmp/project".to_string()),
+                updated_at: None,
+                source_thought_id: None,
+            },
+            OpenBrainProjectMemory {
+                node_id: "memory-2".to_string(),
+                node_kind: "durable_memory".to_string(),
+                title: "LCM durable memory".to_string(),
+                content: "Second memory body.".to_string(),
+                memory_key: None,
+                project_key: Some("/tmp/project".to_string()),
+                scope_key: Some("/tmp/project".to_string()),
+                updated_at: None,
+                source_thought_id: None,
+            },
+        ],
+    );
+
+    assert!(section.contains("<open_brain_project_bootstrap>"));
+    assert!(section.contains("- [memory-1] Architecture direction"));
+    assert!(section.contains("Prefer Open Brain durable memories as the startup baseline."));
+    assert!(!section.contains("memory-2"));
 }
 
 #[tokio::test]
