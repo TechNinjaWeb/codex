@@ -137,6 +137,36 @@ pub(crate) fn format_tokens_compact(value: i64) -> String {
     format!("{formatted}{suffix}")
 }
 
+const CONTEXT_METER_SLOTS: usize = 5;
+const CONTEXT_METER_FULL: char = '█';
+const CONTEXT_METER_EMPTY: char = ' ';
+const CONTEXT_METER_PARTIALS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+
+pub(crate) fn format_context_meter(percent_remaining: i64) -> String {
+    let clamped = percent_remaining.clamp(0, 100) as usize;
+    let total_units = CONTEXT_METER_SLOTS * 8;
+    let filled_units = (clamped * total_units + 50) / 100;
+    let full_slots = filled_units / 8;
+    let partial_units = filled_units % 8;
+
+    let mut bar = String::with_capacity(CONTEXT_METER_SLOTS + 2);
+    bar.push('[');
+
+    for slot in 0..CONTEXT_METER_SLOTS {
+        let ch = if slot < full_slots {
+            CONTEXT_METER_FULL
+        } else if slot == full_slots && partial_units > 0 {
+            CONTEXT_METER_PARTIALS[partial_units]
+        } else {
+            CONTEXT_METER_EMPTY
+        };
+        bar.push(ch);
+    }
+
+    bar.push(']');
+    bar
+}
+
 pub(crate) fn format_directory_display(directory: &Path, max_width: Option<usize>) -> String {
     let formatted = if let Some(rel) = relativize_to_home(directory) {
         if rel.as_os_str().is_empty() {
@@ -219,6 +249,16 @@ mod tests {
         for (plan_type, expected) in cases {
             assert_eq!(plan_type_display_name(plan_type), expected);
         }
+    }
+
+    #[test]
+    fn format_context_meter_renders_compact_bar() {
+        assert_eq!(format_context_meter(0), "[     ]");
+        assert_eq!(format_context_meter(20), "[█    ]");
+        assert_eq!(format_context_meter(32), "[█▋   ]");
+        assert_eq!(format_context_meter(50), "[██▌  ]");
+        assert_eq!(format_context_meter(80), "[████ ]");
+        assert_eq!(format_context_meter(100), "[█████]");
     }
 
     #[tokio::test]

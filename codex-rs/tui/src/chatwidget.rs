@@ -7219,11 +7219,6 @@ impl ChatWidget {
         )
     }
 
-    fn status_line_context_used_percent(&self) -> Option<i64> {
-        let remaining = self.status_line_context_remaining_percent().unwrap_or(100);
-        Some((100 - remaining).clamp(0, 100))
-    }
-
     fn status_line_total_usage(&self) -> TokenUsage {
         self.token_info
             .as_ref()

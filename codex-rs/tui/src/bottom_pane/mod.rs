@@ -1687,7 +1687,7 @@ mod tests {
         let inline = status.inline_message().expect("inline message");
         assert!(inline.contains("gpt-5.4 high"));
         assert!(inline.contains("~/src/project"));
-        assert!(inline.contains("32% context left"));
+        assert!(inline.contains("Context [█▋   ]"));
         assert!(inline.contains("background terminal"));
     }
 
