@@ -3,6 +3,7 @@ use super::*;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::InitialHistory;
@@ -32,6 +33,23 @@ fn assistant_message(text: &str) -> ResponseItem {
         }],
         end_turn: None,
         phase: None,
+    }
+}
+
+fn function_call(call_id: &str) -> ResponseItem {
+    ResponseItem::FunctionCall {
+        id: None,
+        name: "tool".to_string(),
+        namespace: None,
+        arguments: "{}".to_string(),
+        call_id: call_id.to_string(),
+    }
+}
+
+fn function_output(call_id: &str) -> ResponseItem {
+    ResponseItem::FunctionCallOutput {
+        call_id: call_id.to_string(),
+        output: FunctionCallOutputPayload::from_text("ok".to_string()),
     }
 }
 
@@ -821,6 +839,42 @@ async fn record_initial_history_resumed_does_not_seed_reference_context_item_aft
 
     assert_eq!(session.previous_turn_settings().await, None);
     assert!(session.reference_context_item().await.is_none());
+}
+
+#[tokio::test]
+async fn reconstruct_history_repairs_invalid_replacement_history_from_compaction() {
+    let (session, turn_context) = make_session_and_context().await;
+    let replacement_history = vec![
+        function_call("call-1"),
+        assistant_message("intervening text"),
+        function_output("call-2"),
+    ];
+    let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
+        message: String::new(),
+        replacement_history: Some(replacement_history),
+        summary_node_id: None,
+        span_id: None,
+        depth: None,
+        src_tok: None,
+        desc_tok: None,
+        fresh_tail_count: None,
+    })];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(
+        reconstructed.history,
+        vec![
+            function_call("call-1"),
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: FunctionCallOutputPayload::from_text("aborted".to_string()),
+            },
+            assistant_message("intervening text"),
+        ]
+    );
 }
 
 #[tokio::test]

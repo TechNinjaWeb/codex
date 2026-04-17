@@ -4,6 +4,8 @@ use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::compact::InitialContextInjection;
 use crate::compact::insert_initial_context_before_last_real_user_or_summary;
+use crate::context_manager::compute_protected_tail_split;
+use crate::context_manager::validate_replacement_history;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
@@ -138,6 +140,11 @@ async fn run_lcm_compact_task_inner(
             insert_initial_context_before_last_real_user_or_summary(new_history, initial_context);
     }
     new_history.extend(tail.clone());
+    if let Err(issues) = validate_replacement_history(&new_history) {
+        return Err(CodexErr::Fatal(format!(
+            "Open Brain LCM replacement history failed integrity validation: {issues:?}"
+        )));
+    }
 
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
@@ -196,31 +203,8 @@ fn split_history_for_lcm(
     if items.is_empty() {
         return (Vec::new(), Vec::new());
     }
-    let mut split_at = items
-        .len()
-        .saturating_sub(fresh_tail_count.min(items.len()));
-    while split_at > 0 && should_expand_tail_left(items.get(split_at - 1), items.get(split_at)) {
-        split_at -= 1;
-    }
+    let split_at = compute_protected_tail_split(items, fresh_tail_count);
     (items[..split_at].to_vec(), items[split_at..].to_vec())
-}
-
-fn should_expand_tail_left(left: Option<&ResponseItem>, right: Option<&ResponseItem>) -> bool {
-    matches!(
-        (left, right),
-        (
-            Some(
-                ResponseItem::FunctionCall { .. }
-                    | ResponseItem::CustomToolCall { .. }
-                    | ResponseItem::ToolSearchCall { .. }
-            ),
-            Some(
-                ResponseItem::FunctionCallOutput { .. }
-                    | ResponseItem::CustomToolCallOutput { .. }
-                    | ResponseItem::ToolSearchOutput { .. }
-            )
-        )
-    )
 }
 
 fn render_history_block(items: &[ResponseItem]) -> String {
@@ -637,7 +621,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn split_history_keeps_tool_pairs_in_tail() {
+    fn split_history_keeps_separated_tool_pairs_in_tail() {
         let items = vec![
             ResponseItem::Message {
                 id: None,
@@ -655,6 +639,12 @@ mod tests {
                 arguments: "{}".to_string(),
                 call_id: "call-1".to_string(),
             },
+            ResponseItem::Reasoning {
+                id: String::new(),
+                summary: Vec::new(),
+                encrypted_content: None,
+                content: None,
+            },
             ResponseItem::FunctionCallOutput {
                 call_id: "call-1".to_string(),
                 output: FunctionCallOutputPayload::from_text("ok".to_string()),
@@ -663,9 +653,10 @@ mod tests {
 
         let (head, tail) = split_history_for_lcm(&items, 1);
         assert_eq!(head.len(), 1);
-        assert_eq!(tail.len(), 2);
+        assert_eq!(tail.len(), 3);
         assert!(matches!(tail[0], ResponseItem::FunctionCall { .. }));
-        assert!(matches!(tail[1], ResponseItem::FunctionCallOutput { .. }));
+        assert!(matches!(tail[1], ResponseItem::Reasoning { .. }));
+        assert!(matches!(tail[2], ResponseItem::FunctionCallOutput { .. }));
     }
 
     #[test]

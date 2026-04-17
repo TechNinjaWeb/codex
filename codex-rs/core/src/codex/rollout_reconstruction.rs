@@ -1,5 +1,6 @@
 use super::*;
 use crate::context_manager::is_user_turn_boundary;
+use crate::context_manager::repair_replacement_history_for_resume;
 
 // Return value of `Session::reconstruct_history_from_rollout`, bundling the rebuilt history with
 // the resume/fork hydration metadata derived from the same replay.
@@ -234,7 +235,14 @@ impl Session {
         let mut history = ContextManager::new();
         let mut saw_legacy_compaction_without_replacement_history = false;
         if let Some(base_replacement_history) = base_replacement_history {
-            history.replace(base_replacement_history.to_vec());
+            let repaired = repair_replacement_history_for_resume(base_replacement_history);
+            if repaired.changed {
+                tracing::warn!(
+                    issues = ?repaired.issues,
+                    "repaired invalid compacted replacement history during resume reconstruction"
+                );
+            }
+            history.replace(repaired.items);
         }
         // Materialize exact history semantics from the replay-derived suffix. The eventual lazy
         // design should keep this same replay shape, but drive it from a resumable reverse source
@@ -251,7 +259,14 @@ impl Session {
                     if let Some(replacement_history) = &compacted.replacement_history {
                         // This should actually never happen, because the reverse loop above (to build rollout_suffix)
                         // should stop before any compaction that has Some replacement_history
-                        history.replace(replacement_history.clone());
+                        let repaired = repair_replacement_history_for_resume(replacement_history);
+                        if repaired.changed {
+                            tracing::warn!(
+                                issues = ?repaired.issues,
+                                "repaired invalid compacted replacement history inside rollout suffix"
+                            );
+                        }
+                        history.replace(repaired.items);
                     } else {
                         saw_legacy_compaction_without_replacement_history = true;
                         // Legacy rollouts without `replacement_history` should rebuild the
