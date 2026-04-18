@@ -30,8 +30,10 @@ use tracing::info;
 use tracing::warn;
 
 const DURABLE_MEMORY_QUALITY_VERSION: u32 = 1;
+pub(crate) const PROJECT_BOOTSTRAP_LIMIT: usize = 6;
 const MAX_PROMOTED_RECORDS: usize = 2;
-const MAX_UPGRADE_BATCH: usize = 8;
+pub(crate) const PROJECT_UPGRADE_SOURCE_LIMIT: usize = 32;
+pub(crate) const MAX_UPGRADE_BATCH: usize = 8;
 const EXTRACTION_EVIDENCE_TOKEN_BUDGET: usize = 700;
 const CONFIDENCE_THRESHOLD: f64 = 0.72;
 const EXTRACTION_PROMPT: &str = r#"Extract durable project memory records from the provided source.
@@ -176,21 +178,78 @@ async fn run_startup_tasks(sess: Arc<Session>) -> CodexResult<()> {
     let request = RequestContext::from_turn_context(turn_context.as_ref());
 
     backfill_latest_summary(sess.as_ref(), &runtime, &request).await?;
-    upgrade_recent_project_memories(sess.as_ref(), &runtime, &request).await?;
+    run_project_memory_upgrade(
+        sess.as_ref(),
+        &runtime,
+        &request,
+        PROJECT_UPGRADE_SOURCE_LIMIT,
+        MAX_UPGRADE_BATCH,
+    )
+    .await?;
     Ok(())
 }
 
 pub(crate) async fn prepare_project_bootstrap_memories(
-    sess: &Session,
-    turn_context: &TurnContext,
+    _sess: &Session,
+    _turn_context: &TurnContext,
     runtime: &OpenBrainRuntime,
 ) -> CodexResult<Vec<OpenBrainProjectMemory>> {
-    let request = RequestContext::from_turn_context(turn_context);
-    upgrade_recent_project_memories(sess, runtime, &request).await?;
     runtime
-        .list_project_durable_memories(6)
+        .list_project_durable_memories(PROJECT_BOOTSTRAP_LIMIT)
         .await
         .map_err(|err| CodexErr::Fatal(format!("Open Brain project bootstrap failed: {err}")))
+}
+
+pub(crate) async fn run_project_memory_upgrade_pass(
+    sess: &Session,
+    runtime: &OpenBrainRuntime,
+    turn_context: &TurnContext,
+    source_limit: usize,
+    max_promotions: usize,
+) -> CodexResult<usize> {
+    let request = RequestContext::from_turn_context(turn_context);
+    run_project_memory_upgrade(sess, runtime, &request, source_limit, max_promotions).await
+}
+
+async fn run_project_memory_upgrade(
+    sess: &Session,
+    runtime: &OpenBrainRuntime,
+    request: &RequestContext,
+    source_limit: usize,
+    max_promotions: usize,
+) -> CodexResult<usize> {
+    let promotion_mode = memory_promotion_mode(sess, sess.conversation_id).await;
+    if !promotion_mode.allows_promotion() {
+        tracing::debug!(
+            "skipping LCM durable-memory upgrade: thread memory mode disallows promotion"
+        );
+        return Ok(0);
+    }
+    if source_limit == 0 || max_promotions == 0 {
+        return Ok(0);
+    }
+
+    let memories = runtime
+        .list_project_durable_memories(source_limit)
+        .await
+        .map_err(|err| {
+            CodexErr::Fatal(format!("Open Brain durable-memory upgrade failed: {err}"))
+        })?;
+    let mut upgraded = 0usize;
+    for memory in memories
+        .iter()
+        .filter(|memory| memory_needs_upgrade(memory))
+        .take(max_promotions)
+    {
+        let Some(input) = upgrade_input(memory, runtime.mirror_durable_to_thoughts()) else {
+            continue;
+        };
+        upgraded += promote_records(sess, None, runtime, request, input).await;
+    }
+    if upgraded > 0 {
+        info!("inserted {upgraded} LCM durable-memory upgrade record(s)");
+    }
+    Ok(upgraded)
 }
 
 async fn backfill_latest_summary(
@@ -233,44 +292,6 @@ async fn backfill_latest_summary(
         mirror_to_thoughts: runtime.mirror_durable_to_thoughts(),
     };
     promote_records(sess, None, runtime, request, input).await;
-    Ok(())
-}
-
-async fn upgrade_recent_project_memories(
-    sess: &Session,
-    runtime: &OpenBrainRuntime,
-    request: &RequestContext,
-) -> CodexResult<()> {
-    let promotion_mode = memory_promotion_mode(sess, sess.conversation_id).await;
-    if !promotion_mode.allows_promotion() {
-        tracing::debug!(
-            "skipping LCM durable-memory upgrade: thread memory mode disallows promotion"
-        );
-        return Ok(());
-    }
-
-    let memories = runtime
-        .list_project_durable_memories(32)
-        .await
-        .map_err(|err| {
-            CodexErr::Fatal(format!("Open Brain durable-memory upgrade failed: {err}"))
-        })?;
-    let mut upgraded = 0usize;
-    for memory in memories
-        .iter()
-        .filter(|memory| memory_needs_upgrade(memory))
-    {
-        if upgraded >= MAX_UPGRADE_BATCH {
-            break;
-        }
-        let Some(input) = upgrade_input(memory, runtime.mirror_durable_to_thoughts()) else {
-            continue;
-        };
-        upgraded += promote_records(sess, None, runtime, request, input).await;
-    }
-    if upgraded > 0 {
-        info!("inserted {upgraded} LCM durable-memory upgrade record(s)");
-    }
     Ok(())
 }
 
@@ -814,7 +835,8 @@ fn fallback_records(input: &DurableMemoryExtractionInput) -> Vec<OpenBrainDurabl
 
     if title_lowered.contains("gap between what the docs say and what's actually been implemented")
         || (allow_body_classification
-            && (body_lowered.contains("gap between what the docs say and what's actually been implemented")
+            && (body_lowered
+                .contains("gap between what the docs say and what's actually been implemented")
                 || (body_lowered.contains("documentation")
                     && body_lowered.contains("dashboard")
                     && body_lowered.contains("deleted"))))
@@ -1085,7 +1107,9 @@ mod tests {
             source_summary_node_id: Some("summary-1".to_string()),
             source_title: Some("LCM durable memory".to_string()),
             latest_user_message: None,
-            summary_text: "assistant: LCM system instruction\n<context_engine>\nengine = open_brain_lcm".to_string(),
+            summary_text:
+                "assistant: LCM system instruction\n<context_engine>\nengine = open_brain_lcm"
+                    .to_string(),
             evidence_text: None,
             source_node_ids: vec!["summary-1".to_string()],
             source_event_ids: vec!["event-1".to_string()],

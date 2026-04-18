@@ -4181,6 +4181,34 @@ impl Session {
         state.session_configuration.open_brain_runtime.clone()
     }
 
+    pub async fn run_project_memory_upgrade(&self) -> CodexResult<usize> {
+        self.run_project_memory_upgrade_with_limits(
+            crate::lcm_durable_memory::PROJECT_UPGRADE_SOURCE_LIMIT,
+            crate::lcm_durable_memory::MAX_UPGRADE_BATCH,
+        )
+        .await
+    }
+
+    pub async fn run_project_memory_upgrade_with_limits(
+        &self,
+        source_limit: usize,
+        max_promotions: usize,
+    ) -> CodexResult<usize> {
+        let runtime = match self.open_brain_runtime().await {
+            Some(runtime) => runtime,
+            None => return Ok(0),
+        };
+        let turn_context = self.new_default_turn().await;
+        crate::lcm_durable_memory::run_project_memory_upgrade_pass(
+            self,
+            &runtime,
+            &turn_context,
+            source_limit,
+            max_promotions,
+        )
+        .await
+    }
+
     pub(crate) async fn open_brain_session_metadata(&self) -> Option<OpenBrainSessionMetadata> {
         let state = self.state.lock().await;
         state
@@ -4308,16 +4336,10 @@ impl Session {
             format!("cwd = {cwd}"),
         ];
 
-        let mut bootstrap_memories = memories
+        let bootstrap_memories = memories
             .iter()
-            .filter_map(|memory| Self::open_brain_bootstrap_memory_entry(memory, false))
+            .filter_map(Self::open_brain_bootstrap_memory_entry)
             .collect::<Vec<_>>();
-        if bootstrap_memories.is_empty() {
-            bootstrap_memories = memories
-                .iter()
-                .filter_map(|memory| Self::open_brain_bootstrap_memory_entry(memory, true))
-                .collect::<Vec<_>>();
-        }
 
         if bootstrap_memories.is_empty() {
             lines.push("memories = none".to_string());
@@ -4341,34 +4363,22 @@ impl Session {
 
     fn open_brain_bootstrap_memory_entry(
         memory: &OpenBrainProjectMemory,
-        allow_generic_memory_types: bool,
     ) -> Option<(String, String, Option<String>)> {
         let title = memory.title.trim();
-        let normalized_title = title.to_ascii_lowercase();
         let normalized_type = memory
             .memory_type
             .as_deref()
             .map(str::trim)
             .filter(|memory_type| !memory_type.is_empty())
             .map(str::to_ascii_lowercase);
-        if title.is_empty()
-            || matches!(
-                normalized_title.as_str(),
-                "lcm durable memory" | "durable memory" | "project durable memory"
-            )
-            || (!allow_generic_memory_types
-                && matches!(
-                    normalized_type.as_deref(),
-                    Some("lcm_leaf_summary") | Some("durable_memory")
-                ))
-        {
+        if title.is_empty() {
             return None;
         }
 
         Some((
             memory.node_id.clone(),
             normalized_type
-                .as_deref()
+                .clone()
                 .map(|memory_type| format!("{memory_type}: {title}"))
                 .unwrap_or_else(|| title.to_string()),
             Self::open_brain_bootstrap_body(memory.content.trim()),

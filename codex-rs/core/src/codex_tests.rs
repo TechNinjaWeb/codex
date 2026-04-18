@@ -4209,12 +4209,12 @@ fn render_open_brain_project_bootstrap_section_lists_recovered_memories() {
 
     assert!(section.contains("<open_brain_project_bootstrap>"));
     assert!(section.contains("- [memory-1] implementation_status: Architecture direction"));
+    assert!(section.contains("- [memory-2] durable_memory: LCM durable memory"));
     assert!(section.contains("Prefer Open Brain durable memories as the startup baseline."));
-    assert!(!section.contains("memory-2"));
 }
 
 #[test]
-fn render_open_brain_project_bootstrap_section_falls_back_to_generic_memories() {
+fn render_open_brain_project_bootstrap_section_does_not_filter_generic_memory_types() {
     let section = Session::render_open_brain_project_bootstrap_section(
         "/tmp/project",
         "/tmp/project",
@@ -4238,6 +4238,30 @@ fn render_open_brain_project_bootstrap_section_falls_back_to_generic_memories() 
 
     assert!(section.contains("- [memory-legacy] lcm_leaf_summary: Architecture direction"));
     assert!(section.contains("Prefer Open Brain durable memories as the startup baseline."));
+}
+
+#[tokio::test]
+async fn run_project_memory_upgrade_returns_zero_without_open_brain_runtime() {
+    let (session, _turn_context) = make_session_and_context().await;
+
+    let upgraded = session
+        .run_project_memory_upgrade()
+        .await
+        .expect("running project-memory upgrade without runtime should be no-op");
+
+    assert_eq!(upgraded, 0);
+}
+
+#[tokio::test]
+async fn run_project_memory_upgrade_with_limits_returns_zero_without_open_brain_runtime() {
+    let (session, _turn_context) = make_session_and_context().await;
+
+    let upgraded = session
+        .run_project_memory_upgrade_with_limits(1, 1)
+        .await
+        .expect("running project-memory upgrade with limits without runtime should be no-op");
+
+    assert_eq!(upgraded, 0);
 }
 
 #[tokio::test]
