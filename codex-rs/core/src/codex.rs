@@ -4275,7 +4275,13 @@ impl Session {
             state.session_configuration.open_brain_runtime.clone()
         }?;
 
-        match runtime.list_project_durable_memories(6).await {
+        match crate::lcm_durable_memory::prepare_project_bootstrap_memories(
+            self,
+            turn_context,
+            &runtime,
+        )
+        .await
+        {
             Ok(memories) => crate::context_manager::updates::build_contextual_user_message(vec![
                 Self::render_open_brain_project_bootstrap_section(
                     runtime.project_key(),

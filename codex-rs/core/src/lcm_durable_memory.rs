@@ -180,6 +180,19 @@ async fn run_startup_tasks(sess: Arc<Session>) -> CodexResult<()> {
     Ok(())
 }
 
+pub(crate) async fn prepare_project_bootstrap_memories(
+    sess: &Session,
+    turn_context: &TurnContext,
+    runtime: &OpenBrainRuntime,
+) -> CodexResult<Vec<OpenBrainProjectMemory>> {
+    let request = RequestContext::from_turn_context(turn_context);
+    upgrade_recent_project_memories(sess, runtime, &request).await?;
+    runtime
+        .list_project_durable_memories(6)
+        .await
+        .map_err(|err| CodexErr::Fatal(format!("Open Brain project bootstrap failed: {err}")))
+}
+
 async fn backfill_latest_summary(
     sess: &Session,
     runtime: &OpenBrainRuntime,
@@ -253,11 +266,10 @@ async fn upgrade_recent_project_memories(
         let Some(input) = upgrade_input(memory, runtime.mirror_durable_to_thoughts()) else {
             continue;
         };
-        promote_records(sess, None, runtime, request, input).await;
-        upgraded += 1;
+        upgraded += promote_records(sess, None, runtime, request, input).await;
     }
     if upgraded > 0 {
-        info!("ran LCM durable-memory upgrade for {upgraded} recent project memory record(s)");
+        info!("inserted {upgraded} LCM durable-memory upgrade record(s)");
     }
     Ok(())
 }
@@ -268,45 +280,57 @@ async fn promote_records(
     runtime: &OpenBrainRuntime,
     request: &RequestContext,
     input: DurableMemoryExtractionInput,
-) {
+) -> usize {
     if input.summary_text.trim().is_empty() {
         tracing::debug!(
             promotion_source = input.promotion_source,
             "skipping LCM durable-memory promotion: empty summary text"
         );
-        return;
+        return 0;
     }
 
-    let records = match extract_records(sess, request, &input).await {
-        Ok(records) => records,
-        Err(err) => {
-            warn!(
-                promotion_source = input.promotion_source,
-                "LCM durable-memory extraction failed: {err}"
-            );
-            if let Some(turn_context) = turn_context {
-                sess.notify_background_event(
-                    turn_context,
-                    format!("LCM durable-memory extraction failed: {err}"),
-                )
-                .await;
-            }
-            return;
-        }
-    };
-
-    let records = if records.is_empty() {
+    let records = if should_prefer_deterministic_upgrade(&input) {
         let fallback = fallback_records(&input);
         if !fallback.is_empty() {
             tracing::info!(
                 promotion_source = input.promotion_source,
                 fallback_count = fallback.len(),
-                "LCM durable-memory extraction fell back to deterministic typing"
+                "LCM durable-memory upgrade is using deterministic typing"
             );
         }
         fallback
     } else {
-        records
+        let records = match extract_records(sess, request, &input).await {
+            Ok(records) => records,
+            Err(err) => {
+                warn!(
+                    promotion_source = input.promotion_source,
+                    "LCM durable-memory extraction failed: {err}"
+                );
+                if let Some(turn_context) = turn_context {
+                    sess.notify_background_event(
+                        turn_context,
+                        format!("LCM durable-memory extraction failed: {err}"),
+                    )
+                    .await;
+                }
+                return 0;
+            }
+        };
+
+        if records.is_empty() {
+            let fallback = fallback_records(&input);
+            if !fallback.is_empty() {
+                tracing::info!(
+                    promotion_source = input.promotion_source,
+                    fallback_count = fallback.len(),
+                    "LCM durable-memory extraction fell back to deterministic typing"
+                );
+            }
+            fallback
+        } else {
+            records
+        }
     };
 
     if records.is_empty() {
@@ -314,7 +338,7 @@ async fn promote_records(
             promotion_source = input.promotion_source,
             "LCM durable-memory extraction produced no promotable records"
         );
-        return;
+        return 0;
     }
 
     match runtime.promote_durable_memory(&records).await {
@@ -338,6 +362,7 @@ async fn promote_records(
                 )
                 .await;
             }
+            result.inserted_count
         }
         Err(err) => {
             warn!(
@@ -351,6 +376,7 @@ async fn promote_records(
                 )
                 .await;
             }
+            0
         }
     }
 }
@@ -718,6 +744,27 @@ fn upgrade_input(
     })
 }
 
+fn should_prefer_deterministic_upgrade(input: &DurableMemoryExtractionInput) -> bool {
+    if input.promotion_source != "recent quality upgrade" {
+        return false;
+    }
+    if let Some(source_title) = input.source_title.as_deref()
+        && title_has_known_upgrade_signal(source_title)
+    {
+        return true;
+    }
+    looks_like_polluted_memory(input.summary_text.trim())
+}
+
+fn title_has_known_upgrade_signal(title: &str) -> bool {
+    let lowered = title.to_ascii_lowercase();
+    lowered.contains("faithful implementation of the lcm paper")
+        || (lowered.contains("dashboard") && lowered.contains("deleted"))
+        || lowered.contains("two page outlook")
+        || lowered.contains("two-page outlook")
+        || (lowered.contains("zettelkasten") && lowered.contains("mempalace"))
+}
+
 fn fallback_records(input: &DurableMemoryExtractionInput) -> Vec<OpenBrainDurableMemoryRecord> {
     let mut records: Vec<OpenBrainDurableMemoryRecord> = Vec::new();
     let source_title = input.source_title.clone().unwrap_or_default();
@@ -879,6 +926,8 @@ mod tests {
     use super::memory_needs_upgrade;
     use super::normalize_content;
     use super::normalize_title;
+    use super::should_prefer_deterministic_upgrade;
+    use super::title_has_known_upgrade_signal;
     use codex_open_brain::OpenBrainProjectMemory;
     use pretty_assertions::assert_eq;
 
@@ -982,5 +1031,51 @@ mod tests {
                 .any(|record| record.memory_type == "constraint"
                     && record.title.contains("two-page outlook"))
         );
+    }
+
+    #[test]
+    fn deterministic_upgrade_prefers_known_legacy_titles() {
+        let input = DurableMemoryExtractionInput {
+            source_summary_node_id: Some("summary-1".to_string()),
+            source_title: Some(
+                "LCM memory: How does the Zettelkasten and MemPalace work compare to each other?"
+                    .to_string(),
+            ),
+            latest_user_message: None,
+            summary_text: "assistant: noisy legacy memory".to_string(),
+            evidence_text: None,
+            source_node_ids: vec!["summary-1".to_string()],
+            source_event_ids: vec!["event-1".to_string()],
+            source_token_count: None,
+            summary_token_count: None,
+            promotion_source: "recent quality upgrade",
+            supersede_node_ids: vec!["legacy-node".to_string()],
+            mirror_to_thoughts: true,
+        };
+
+        assert!(title_has_known_upgrade_signal(
+            input.source_title.as_deref().unwrap_or_default()
+        ));
+        assert!(should_prefer_deterministic_upgrade(&input));
+    }
+
+    #[test]
+    fn deterministic_upgrade_prefers_polluted_recent_upgrade_bodies() {
+        let input = DurableMemoryExtractionInput {
+            source_summary_node_id: Some("summary-1".to_string()),
+            source_title: Some("LCM durable memory".to_string()),
+            latest_user_message: None,
+            summary_text: "assistant: LCM system instruction\n<context_engine>\nengine = open_brain_lcm".to_string(),
+            evidence_text: None,
+            source_node_ids: vec!["summary-1".to_string()],
+            source_event_ids: vec!["event-1".to_string()],
+            source_token_count: None,
+            summary_token_count: None,
+            promotion_source: "recent quality upgrade",
+            supersede_node_ids: vec!["legacy-node".to_string()],
+            mirror_to_thoughts: true,
+        };
+
+        assert!(should_prefer_deterministic_upgrade(&input));
     }
 }
