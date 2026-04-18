@@ -3215,6 +3215,26 @@ pub struct ThreadContextExpandResponse {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ThreadContextUpgradeProjectMemoryParams {
+    pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub source_limit: Option<u32>,
+    #[ts(optional = nullable)]
+    pub max_promotions: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadContextUpgradeProjectMemoryResponse {
+    pub thread_id: String,
+    pub promoted_count: u32,
+    pub message: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct ThreadContextPacketParams {
     pub thread_id: String,
     #[ts(optional = nullable)]
@@ -3228,11 +3248,9 @@ pub struct ThreadContextPacketParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadContextPacketResponse {
     pub thread_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
+    #[serde(default)]
     pub packet: Option<JsonValue>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
+    #[serde(default)]
     pub packets: Option<Vec<JsonValue>>,
 }
 
@@ -3917,13 +3935,10 @@ pub struct Thread {
     /// Optional user-facing thread title.
     pub name: Option<String>,
     /// Active context engine for this thread when known.
-    #[ts(optional = nullable)]
     pub context_engine: Option<ContextEngine>,
     /// Open Brain session id associated with this thread when available.
-    #[ts(optional = nullable)]
     pub open_brain_session_id: Option<String>,
     /// Most recently persisted Open Brain context packet id for this thread.
-    #[ts(optional = nullable)]
     pub last_context_packet_id: Option<String>,
     /// Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read`
     /// (when `includeTurns` is true) responses.

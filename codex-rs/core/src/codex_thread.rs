@@ -171,6 +171,21 @@ impl CodexThread {
         self.codex.context_engine().await
     }
 
+    pub async fn run_project_memory_upgrade(&self) -> CodexResult<usize> {
+        self.codex.session.run_project_memory_upgrade().await
+    }
+
+    pub async fn run_project_memory_upgrade_with_limits(
+        &self,
+        source_limit: usize,
+        max_promotions: usize,
+    ) -> CodexResult<usize> {
+        self.codex
+            .session
+            .run_project_memory_upgrade_with_limits(source_limit, max_promotions)
+            .await
+    }
+
     pub async fn open_brain_session_metadata(&self) -> Option<OpenBrainSessionMetadata> {
         self.codex.open_brain_session_metadata().await
     }

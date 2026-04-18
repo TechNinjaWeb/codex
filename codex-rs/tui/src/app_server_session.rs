@@ -43,6 +43,8 @@ use codex_app_server_protocol::ThreadContextGraphParams;
 use codex_app_server_protocol::ThreadContextGraphResponse;
 use codex_app_server_protocol::ThreadContextSearchParams;
 use codex_app_server_protocol::ThreadContextSearchResponse;
+use codex_app_server_protocol::ThreadContextUpgradeProjectMemoryParams;
+use codex_app_server_protocol::ThreadContextUpgradeProjectMemoryResponse;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadListParams;
@@ -523,6 +525,26 @@ impl AppServerSession {
             })
             .await
             .wrap_err("thread/contextExpand failed in TUI")
+    }
+
+    pub(crate) async fn thread_context_upgrade_project_memory(
+        &mut self,
+        thread_id: ThreadId,
+        source_limit: Option<u32>,
+        max_promotions: Option<u32>,
+    ) -> Result<ThreadContextUpgradeProjectMemoryResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadContextUpgradeProjectMemory {
+                request_id,
+                params: ThreadContextUpgradeProjectMemoryParams {
+                    thread_id: thread_id.to_string(),
+                    source_limit,
+                    max_promotions,
+                },
+            })
+            .await
+            .wrap_err("thread/contextUpgradeProjectMemory failed in TUI")
     }
 
     #[allow(clippy::too_many_arguments)]

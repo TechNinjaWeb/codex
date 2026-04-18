@@ -626,7 +626,9 @@ async fn slash_lcm_invalid_args_render_usage() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        rendered.contains("Usage: /lcm [graph|grep <query>|expand <node-id>|thoughts]"),
+        rendered.contains(
+            "Usage: /lcm [graph|grep <query>|expand <node-id>|upgrade [source-limit] [max-promotions]|thoughts]"
+        ),
         "expected usage message, got: {rendered:?}"
     );
 }

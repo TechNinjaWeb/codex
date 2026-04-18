@@ -334,6 +334,13 @@
       ],
       "type": "string"
     },
+    "ContextEngine": {
+      "enum": [
+        "native",
+        "open_brain_lcm"
+      ],
+      "type": "string"
+    },
     "DynamicToolCallOutputContentItem": {
       "oneOf": [
         {
@@ -788,6 +795,17 @@
           "description": "Version of the CLI that created the thread.",
           "type": "string"
         },
+        "contextEngine": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ContextEngine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Active context engine for this thread when known."
+        },
         "createdAt": {
           "description": "Unix timestamp (in seconds) when the thread was created.",
           "format": "int64",
@@ -822,12 +840,26 @@
         "id": {
           "type": "string"
         },
+        "lastContextPacketId": {
+          "description": "Most recently persisted Open Brain context packet id for this thread.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "modelProvider": {
           "description": "Model provider used for this thread (for example, 'openai').",
           "type": "string"
         },
         "name": {
           "description": "Optional user-facing thread title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "openBrainSessionId": {
+          "description": "Open Brain session id associated with this thread when available.",
           "type": [
             "string",
             "null"

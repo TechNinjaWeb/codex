@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ContextEngine": {
+      "enum": [
+        "native",
+        "open_brain_lcm"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "contextEngine": {
+      "$ref": "#/definitions/ContextEngine"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "contextEngine",
+    "threadId"
+  ],
+  "title": "ThreadContextEngineSetParams",
+  "type": "object"
+}

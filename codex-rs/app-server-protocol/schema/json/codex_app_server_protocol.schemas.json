@@ -417,6 +417,174 @@
             },
             "method": {
               "enum": [
+                "thread/contextEngineSet"
+              ],
+              "title": "Thread/contextEngineSetRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadContextEngineSetParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/contextEngineSetRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/contextGraph"
+              ],
+              "title": "Thread/contextGraphRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadContextGraphParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/contextGraphRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/contextDescribe"
+              ],
+              "title": "Thread/contextDescribeRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadContextDescribeParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/contextDescribeRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/contextSearch"
+              ],
+              "title": "Thread/contextSearchRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadContextSearchParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/contextSearchRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/contextExpand"
+              ],
+              "title": "Thread/contextExpandRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadContextExpandParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/contextExpandRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/contextUpgradeProjectMemory"
+              ],
+              "title": "Thread/contextUpgradeProjectMemoryRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadContextUpgradeProjectMemoryParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/contextUpgradeProjectMemoryRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/contextPacket"
+              ],
+              "title": "Thread/contextPacketRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadContextPacketParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/contextPacketRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/unarchive"
               ],
               "title": "Thread/unarchiveRequestMethod",
@@ -7105,6 +7273,13 @@
         "title": "ContextCompactedNotification",
         "type": "object"
       },
+      "ContextEngine": {
+        "enum": [
+          "native",
+          "open_brain_lcm"
+        ],
+        "type": "string"
+      },
       "CreditsSnapshot": {
         "properties": {
           "balance": {
@@ -12620,6 +12795,17 @@
             "description": "Version of the CLI that created the thread.",
             "type": "string"
           },
+          "contextEngine": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ContextEngine"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Active context engine for this thread when known."
+          },
           "createdAt": {
             "description": "Unix timestamp (in seconds) when the thread was created.",
             "format": "int64",
@@ -12654,12 +12840,26 @@
           "id": {
             "type": "string"
           },
+          "lastContextPacketId": {
+            "description": "Most recently persisted Open Brain context packet id for this thread.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "modelProvider": {
             "description": "Model provider used for this thread (for example, 'openai').",
             "type": "string"
           },
           "name": {
             "description": "Optional user-facing thread title.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "openBrainSessionId": {
+            "description": "Open Brain session id associated with this thread when available.",
             "type": [
               "string",
               "null"
@@ -12787,6 +12987,325 @@
       "ThreadCompactStartResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "ThreadCompactStartResponse",
+        "type": "object"
+      },
+      "ThreadContextDescribeParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "includeSuperseded": {
+            "default": false,
+            "type": "boolean"
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "nodeId",
+          "threadId"
+        ],
+        "title": "ThreadContextDescribeParams",
+        "type": "object"
+      },
+      "ThreadContextDescribeResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "description": true,
+          "nodeId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "nodeId",
+          "threadId"
+        ],
+        "title": "ThreadContextDescribeResponse",
+        "type": "object"
+      },
+      "ThreadContextEngineSetParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "contextEngine": {
+            "$ref": "#/definitions/v2/ContextEngine"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "contextEngine",
+          "threadId"
+        ],
+        "title": "ThreadContextEngineSetParams",
+        "type": "object"
+      },
+      "ThreadContextEngineSetResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "contextEngine": {
+            "$ref": "#/definitions/v2/ContextEngine"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "contextEngine",
+          "threadId"
+        ],
+        "title": "ThreadContextEngineSetResponse",
+        "type": "object"
+      },
+      "ThreadContextExpandParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "limit": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "nodeId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "tokenBudget": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadContextExpandParams",
+        "type": "object"
+      },
+      "ThreadContextExpandResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "result": true,
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result",
+          "threadId"
+        ],
+        "title": "ThreadContextExpandResponse",
+        "type": "object"
+      },
+      "ThreadContextGraphParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "includeSuperseded": {
+            "default": false,
+            "type": "boolean"
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadContextGraphParams",
+        "type": "object"
+      },
+      "ThreadContextGraphResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "graph": true,
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "graph",
+          "threadId"
+        ],
+        "title": "ThreadContextGraphResponse",
+        "type": "object"
+      },
+      "ThreadContextPacketParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "tokenBudget": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadContextPacketParams",
+        "type": "object"
+      },
+      "ThreadContextPacketResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "packet": {
+            "default": null
+          },
+          "packets": {
+            "default": null,
+            "items": true,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadContextPacketResponse",
+        "type": "object"
+      },
+      "ThreadContextSearchParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "includeSuperseded": {
+            "default": false,
+            "type": "boolean"
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "query": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query",
+          "threadId"
+        ],
+        "title": "ThreadContextSearchParams",
+        "type": "object"
+      },
+      "ThreadContextSearchResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "results": true,
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "results",
+          "threadId"
+        ],
+        "title": "ThreadContextSearchResponse",
+        "type": "object"
+      },
+      "ThreadContextUpgradeProjectMemoryParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "maxPromotions": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sourceLimit": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadContextUpgradeProjectMemoryParams",
+        "type": "object"
+      },
+      "ThreadContextUpgradeProjectMemoryResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "promotedCount": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "promotedCount",
+          "threadId"
+        ],
+        "title": "ThreadContextUpgradeProjectMemoryResponse",
         "type": "object"
       },
       "ThreadForkParams": {

@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "description": true,
+    "nodeId": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "description",
+    "nodeId",
+    "threadId"
+  ],
+  "title": "ThreadContextDescribeResponse",
+  "type": "object"
+}

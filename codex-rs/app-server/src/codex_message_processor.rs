@@ -140,6 +140,8 @@ use codex_app_server_protocol::ThreadContextPacketParams;
 use codex_app_server_protocol::ThreadContextPacketResponse;
 use codex_app_server_protocol::ThreadContextSearchParams;
 use codex_app_server_protocol::ThreadContextSearchResponse;
+use codex_app_server_protocol::ThreadContextUpgradeProjectMemoryParams;
+use codex_app_server_protocol::ThreadContextUpgradeProjectMemoryResponse;
 use codex_app_server_protocol::ThreadDecrementElicitationParams;
 use codex_app_server_protocol::ThreadDecrementElicitationResponse;
 use codex_app_server_protocol::ThreadForkParams;
@@ -924,6 +926,13 @@ impl CodexMessageProcessor {
             ClientRequest::ThreadContextExpand { request_id, params } => {
                 self.thread_context_expand(to_connection_request_id(request_id), params)
                     .await;
+            }
+            ClientRequest::ThreadContextUpgradeProjectMemory { request_id, params } => {
+                self.thread_context_upgrade_project_memory(
+                    to_connection_request_id(request_id),
+                    params,
+                )
+                .await;
             }
             ClientRequest::ThreadContextPacket { request_id, params } => {
                 self.thread_context_packet(to_connection_request_id(request_id), params)
@@ -3308,6 +3317,59 @@ impl CodexMessageProcessor {
                 self.send_internal_error(
                     request_id,
                     format!("failed to expand thread context: {err}"),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn thread_context_upgrade_project_memory(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadContextUpgradeProjectMemoryParams,
+    ) {
+        const DEFAULT_SOURCE_LIMIT: u32 = 32;
+        const DEFAULT_MAX_PROMOTIONS: u32 = 8;
+
+        let (_, thread) = match self.load_thread(&params.thread_id).await {
+            Ok(value) => value,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let upgrade_result = if params.source_limit.is_none() && params.max_promotions.is_none() {
+            thread.run_project_memory_upgrade().await
+        } else {
+            let source_limit = params.source_limit.unwrap_or(DEFAULT_SOURCE_LIMIT) as usize;
+            let max_promotions = params.max_promotions.unwrap_or(DEFAULT_MAX_PROMOTIONS) as usize;
+            thread
+                .run_project_memory_upgrade_with_limits(source_limit, max_promotions)
+                .await
+        };
+
+        match upgrade_result {
+            Ok(promoted_count) => {
+                self.outgoing
+                    .send_response(
+                        request_id,
+                        ThreadContextUpgradeProjectMemoryResponse {
+                            thread_id: params.thread_id,
+                            promoted_count: promoted_count as u32,
+                            message: if promoted_count == 0 {
+                                Some("No durable memories were eligible for upgrade.".to_string())
+                            } else {
+                                None
+                            },
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                self.send_internal_error(
+                    request_id,
+                    format!("failed to upgrade project durable memories: {err}"),
                 )
                 .await;
             }

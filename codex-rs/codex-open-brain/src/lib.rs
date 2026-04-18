@@ -342,7 +342,7 @@ pub struct OpenBrainDurableMemoryCandidate {
     pub summary_token_count: Option<u32>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct OpenBrainProjectMemory {
     pub node_id: String,
     pub node_kind: String,
@@ -361,6 +361,16 @@ pub struct OpenBrainProjectMemory {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_summary_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_signal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_thought_id: Option<String>,
     #[serde(default)]
     pub source_node_ids: Vec<String>,
@@ -368,6 +378,13 @@ pub struct OpenBrainProjectMemory {
     pub source_event_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_at: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenBrainProjectMemoryProfile {
+    Bootstrap,
+    Packet,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -784,10 +801,26 @@ impl OpenBrainRuntime {
         &self,
         limit: usize,
     ) -> Result<Vec<OpenBrainProjectMemory>, OpenBrainClientError> {
+        self.list_project_durable_memories_with_profile(
+            OpenBrainProjectMemoryProfile::Bootstrap,
+            limit,
+            None,
+        )
+        .await
+    }
+
+    pub async fn list_project_durable_memories_with_profile(
+        &self,
+        profile: OpenBrainProjectMemoryProfile,
+        limit: usize,
+        query: Option<&str>,
+    ) -> Result<Vec<OpenBrainProjectMemory>, OpenBrainClientError> {
         let payload = serde_json::json!({
             "p_session_id": self.session_id,
             "p_project_key": self.project_key,
             "p_scope_key": self.scope_key,
+            "p_profile": profile,
+            "p_query": query,
             "p_limit": limit.max(1),
         });
         self.client

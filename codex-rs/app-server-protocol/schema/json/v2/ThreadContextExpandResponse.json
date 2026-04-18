@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "result": true,
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "result",
+    "threadId"
+  ],
+  "title": "ThreadContextExpandResponse",
+  "type": "object"
+}

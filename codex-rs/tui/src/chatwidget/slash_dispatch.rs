@@ -543,6 +543,38 @@ impl ChatWidget {
                     "expand" if !remainder.is_empty() => {
                         Some(LcmCommand::Expand(remainder.to_string()))
                     }
+                    "upgrade" => {
+                        let mut source_limit = None;
+                        let mut max_promotions = None;
+                        let mut invalid = false;
+
+                        for arg in remainder.split_whitespace() {
+                            if source_limit.is_none() {
+                                source_limit = arg.parse::<u32>().ok();
+                                if source_limit.is_none() {
+                                    invalid = true;
+                                }
+                                continue;
+                            }
+                            if max_promotions.is_none() {
+                                max_promotions = arg.parse::<u32>().ok();
+                                if max_promotions.is_none() {
+                                    invalid = true;
+                                }
+                                continue;
+                            }
+                            invalid = true;
+                        }
+
+                        if invalid {
+                            None
+                        } else {
+                            Some(LcmCommand::Upgrade {
+                                source_limit,
+                                max_promotions,
+                            })
+                        }
+                    }
                     "thoughts" => Some(LcmCommand::Thoughts),
                     _ => None,
                 };
@@ -552,7 +584,8 @@ impl ChatWidget {
                         self.bottom_pane.drain_pending_submission_state();
                     }
                     None => self.add_error_message(
-                        "Usage: /lcm [graph|grep <query>|expand <node-id>|thoughts]".to_string(),
+                        "Usage: /lcm [graph|grep <query>|expand <node-id>|upgrade [source-limit] [max-promotions]|thoughts]"
+                            .to_string(),
                     ),
                 }
             }

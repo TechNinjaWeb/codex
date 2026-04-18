@@ -101,6 +101,10 @@ pub(crate) enum LcmCommand {
     Graph,
     Search(String),
     Expand(String),
+    Upgrade {
+        source_limit: Option<u32>,
+        max_promotions: Option<u32>,
+    },
     Thoughts,
 }
 

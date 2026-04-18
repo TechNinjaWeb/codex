@@ -309,6 +309,10 @@ client_request_definitions! {
         params: v2::ThreadContextExpandParams,
         response: v2::ThreadContextExpandResponse,
     },
+    ThreadContextUpgradeProjectMemory => "thread/contextUpgradeProjectMemory" {
+        params: v2::ThreadContextUpgradeProjectMemoryParams,
+        response: v2::ThreadContextUpgradeProjectMemoryResponse,
+    },
     ThreadContextPacket => "thread/contextPacket" {
         params: v2::ThreadContextPacketParams,
         response: v2::ThreadContextPacketResponse,

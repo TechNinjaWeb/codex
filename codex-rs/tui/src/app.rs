@@ -580,6 +580,10 @@ fn lcm_node_summary(node: &serde_json::Value) -> String {
     } else {
         kind.to_string()
     };
+    let quality = lcm_json_str(node, &["quality_version", "qualityVersion"])
+        .filter(|quality| !quality.is_empty())
+        .map(|value| format!(" q={value}"))
+        .unwrap_or_default();
     let depth = lcm_json_usize(node, &["depth"])
         .map(|depth| format!(" d{depth}"))
         .unwrap_or_default();
@@ -590,7 +594,7 @@ fn lcm_node_summary(node: &serde_json::Value) -> String {
         .map(|value| format!(" desc={value}"))
         .unwrap_or_default();
     format!(
-        "{typed_kind}{depth}{src_tok}{desc_tok} {} {}",
+        "{typed_kind}{quality}{depth}{src_tok}{desc_tok} {} {}",
         lcm_preview_text(&id, 12),
         lcm_node_title(node)
     )
@@ -2183,6 +2187,29 @@ impl App {
                     );
                 }
                 lcm_history_cell("LCM Expand", lines)
+            }
+            LcmCommand::Upgrade {
+                source_limit,
+                max_promotions,
+            } => {
+                let response = app_server
+                    .thread_context_upgrade_project_memory(thread_id, source_limit, max_promotions)
+                    .await
+                    .wrap_err("failed to run durable-memory upgrade")?;
+                let mut lines = vec![
+                    format!("thread: {}", thread.id),
+                    format!("promotions: {}", response.promoted_count),
+                ];
+                if let Some(source_limit) = source_limit {
+                    lines.push(format!("source_limit: {source_limit}"));
+                }
+                if let Some(max_promotions) = max_promotions {
+                    lines.push(format!("max_promotions: {max_promotions}"));
+                }
+                if let Some(message) = response.message {
+                    lines.push(format!("message: {message}"));
+                }
+                lcm_history_cell("LCM Upgrade", lines)
             }
             LcmCommand::Thoughts => {
                 let graph = app_server
