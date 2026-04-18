@@ -768,13 +768,19 @@ fn title_has_known_upgrade_signal(title: &str) -> bool {
 fn fallback_records(input: &DurableMemoryExtractionInput) -> Vec<OpenBrainDurableMemoryRecord> {
     let mut records: Vec<OpenBrainDurableMemoryRecord> = Vec::new();
     let source_title = input.source_title.clone().unwrap_or_default();
-    let corpus = format!(
-        "{}\n{}\n{}",
-        source_title,
-        input.summary_text,
-        input.evidence_text.clone().unwrap_or_default()
-    );
-    let lowered = corpus.to_ascii_lowercase();
+    let title_lowered = source_title.to_ascii_lowercase();
+    let summary_text = input.summary_text.trim();
+    let allow_body_classification = !looks_like_polluted_memory(summary_text);
+    let body_corpus = if allow_body_classification {
+        format!(
+            "{}\n{}",
+            summary_text,
+            input.evidence_text.clone().unwrap_or_default()
+        )
+    } else {
+        String::new()
+    };
+    let body_lowered = body_corpus.to_ascii_lowercase();
 
     let mut push = |memory_type: &str, title: &str, content: &str, confidence: f64| {
         let record = DurableMemoryModelRecord {
@@ -792,8 +798,11 @@ fn fallback_records(input: &DurableMemoryExtractionInput) -> Vec<OpenBrainDurabl
         }
     };
 
-    if lowered.contains("faithful implementation of the lcm paper")
-        || (lowered.contains("lcm paper") && lowered.contains("faithful"))
+    if title_lowered.contains("faithful implementation of the lcm paper")
+        || (title_lowered.contains("lcm paper") && title_lowered.contains("faithful"))
+        || (allow_body_classification
+            && (body_lowered.contains("faithful implementation of the lcm paper")
+                || (body_lowered.contains("lcm paper") && body_lowered.contains("faithful"))))
     {
         push(
             "known_issue",
@@ -803,10 +812,12 @@ fn fallback_records(input: &DurableMemoryExtractionInput) -> Vec<OpenBrainDurabl
         );
     }
 
-    if lowered.contains("gap between what the docs say and what's actually been implemented")
-        || (lowered.contains("documentation")
-            && lowered.contains("dashboard")
-            && lowered.contains("deleted"))
+    if title_lowered.contains("gap between what the docs say and what's actually been implemented")
+        || (allow_body_classification
+            && (body_lowered.contains("gap between what the docs say and what's actually been implemented")
+                || (body_lowered.contains("documentation")
+                    && body_lowered.contains("dashboard")
+                    && body_lowered.contains("deleted"))))
     {
         push(
             "known_issue",
@@ -822,7 +833,12 @@ fn fallback_records(input: &DurableMemoryExtractionInput) -> Vec<OpenBrainDurabl
         );
     }
 
-    if lowered.contains("2 page outlook") || lowered.contains("two page outlook") {
+    if title_lowered.contains("2 page outlook")
+        || title_lowered.contains("two page outlook")
+        || (allow_body_classification
+            && (body_lowered.contains("2 page outlook")
+                || body_lowered.contains("two page outlook")))
+    {
         push(
             "constraint",
             "PDF scan analysis uses a two-page outlook per page",
@@ -831,7 +847,11 @@ fn fallback_records(input: &DurableMemoryExtractionInput) -> Vec<OpenBrainDurabl
         );
     }
 
-    if lowered.contains("zettelkasten") && lowered.contains("mempalace") {
+    if (title_lowered.contains("zettelkasten") && title_lowered.contains("mempalace"))
+        || (allow_body_classification
+            && body_lowered.contains("zettelkasten")
+            && body_lowered.contains("mempalace"))
+    {
         push(
             "implementation_status",
             "Knowledge-organization approaches are still being evaluated",
@@ -1077,5 +1097,37 @@ mod tests {
         };
 
         assert!(should_prefer_deterministic_upgrade(&input));
+    }
+
+    #[test]
+    fn fallback_records_ignore_polluted_body_misclassification() {
+        let input = DurableMemoryExtractionInput {
+            source_summary_node_id: Some("summary-1".to_string()),
+            source_title: Some(
+                "LCM memory: How close are we to a faithful implementation of the LCM paper?"
+                    .to_string(),
+            ),
+            latest_user_message: None,
+            summary_text:
+                "assistant: LCM system instruction\ncontext mentions documentation dashboard deleted"
+                    .to_string(),
+            evidence_text: None,
+            source_node_ids: vec!["summary-1".to_string()],
+            source_event_ids: vec!["event-1".to_string()],
+            source_token_count: None,
+            summary_token_count: None,
+            promotion_source: "recent quality upgrade",
+            supersede_node_ids: vec!["legacy-node".to_string()],
+            mirror_to_thoughts: true,
+        };
+
+        let records = fallback_records(&input);
+        assert!(records.iter().any(|record| {
+            record.memory_type == "known_issue"
+                && record.title == "LCM paper fidelity remains an open implementation question"
+        }));
+        assert!(records.iter().all(|record| {
+            record.title != "Documentation is out of sync with the implementation"
+        }));
     }
 }

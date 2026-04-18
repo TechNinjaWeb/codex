@@ -767,9 +767,13 @@ impl OpenBrainRuntime {
         &self,
         records: &[OpenBrainDurableMemoryRecord],
     ) -> Result<OpenBrainPromotionResult, OpenBrainClientError> {
+        self.ensure_session_scope().await?;
         let payload = serde_json::json!({
             "p_session_id": self.session_id,
             "p_records": records,
+            "p_project_key": self.project_key,
+            "p_scope_key": self.scope_key,
+            "p_thread_id": self.thread_id,
         });
         self.client
             .rpc_json("ob_promote_durable_memory", &payload)
@@ -789,6 +793,15 @@ impl OpenBrainRuntime {
         self.client
             .rpc_json("ob_list_project_durable_memories", &payload)
             .await
+    }
+
+    async fn ensure_session_scope(&self) -> Result<(), OpenBrainClientError> {
+        let payload = serde_json::json!({
+            "p_session_id": self.session_id,
+            "p_workspace_root": self.project_key,
+        });
+        let _: JsonValue = self.client.rpc_json("ob_open_session", &payload).await?;
+        Ok(())
     }
 
     fn to_sync_records(
