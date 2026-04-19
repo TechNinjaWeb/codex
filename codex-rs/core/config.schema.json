@@ -672,6 +672,27 @@
       },
       "type": "object"
     },
+    "ExternalContextToml": {
+      "additionalProperties": false,
+      "description": "External context adapter settings loaded from config.toml.",
+      "properties": {
+        "bearer_token_env_var": {
+          "description": "Optional environment variable containing the bearer token used for the provider request.",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "description": "Maximum time to wait for the external context provider before proceeding without it.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "url": {
+          "description": "Optional HTTP endpoint that returns additive context for each turn.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "FeatureToml_for_MultiAgentV2ConfigToml": {
       "anyOf": [
         {
@@ -2272,6 +2293,14 @@
     },
     "experimental_use_unified_exec_tool": {
       "type": "boolean"
+    },
+    "external_context": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ExternalContextToml"
+        }
+      ],
+      "description": "Sidecar-first external context injection settings."
     },
     "features": {
       "additionalProperties": false,
