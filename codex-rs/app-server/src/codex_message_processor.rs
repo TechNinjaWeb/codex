@@ -7,6 +7,7 @@ use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
 use crate::error_code::INTERNAL_ERROR_CODE;
 use crate::error_code::INVALID_PARAMS_ERROR_CODE;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
+use crate::external_context::fetch_turn_start_context;
 use crate::fuzzy_file_search::FuzzyFileSearchSession;
 use crate::fuzzy_file_search::run_fuzzy_file_search;
 use crate::fuzzy_file_search::start_fuzzy_file_search_session;
@@ -296,6 +297,7 @@ use codex_protocol::dynamic_tools::DynamicToolSpec as CoreDynamicToolSpec;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::TurnItem;
+use codex_protocol::models::DeveloperInstructions;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::ConversationAudioParams;
@@ -7104,13 +7106,6 @@ impl CodexMessageProcessor {
             self.normalize_turn_start_collaboration_mode(mode, collaboration_modes_config)
         });
 
-        // Map v2 input items to core input items.
-        let mapped_items: Vec<CoreInputItem> = params
-            .input
-            .into_iter()
-            .map(V2UserInput::into_core)
-            .collect();
-
         let has_any_overrides = params.cwd.is_some()
             || params.approval_policy.is_some()
             || params.approvals_reviewer.is_some()
@@ -7146,6 +7141,47 @@ impl CodexMessageProcessor {
                 )
                 .await;
         }
+
+        if self.config.external_context.url.is_some() {
+            let config_snapshot = thread.config_snapshot().await;
+            match fetch_turn_start_context(
+                &self.config.external_context,
+                &params.thread_id,
+                &config_snapshot,
+                &params.input,
+            )
+            .await
+            {
+                Ok(additional_contexts) if !additional_contexts.is_empty() => {
+                    let items: Vec<ResponseItem> = additional_contexts
+                        .into_iter()
+                        .map(|text| DeveloperInstructions::new(text).into())
+                        .collect();
+                    if let Err(err) = thread.inject_response_items(items).await {
+                        warn!(
+                            thread_id = %params.thread_id,
+                            error = %err,
+                            "failed to inject external context before turn start; continuing"
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    warn!(
+                        thread_id = %params.thread_id,
+                        error = %err,
+                        "external context provider failed during turn start; continuing"
+                    );
+                }
+            }
+        }
+
+        // Map v2 input items to core input items.
+        let mapped_items: Vec<CoreInputItem> = params
+            .input
+            .into_iter()
+            .map(V2UserInput::into_core)
+            .collect();
 
         // Start the turn by submitting the user input. Return its submission id as turn_id.
         let turn_id = self

@@ -30,6 +30,7 @@ use codex_config::profile_toml::ConfigProfile;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::DEFAULT_OTEL_ENVIRONMENT;
+use codex_config::types::ExternalContextConfig;
 use codex_config::types::History;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerDisabledReason;
@@ -422,6 +423,9 @@ pub struct Config {
 
     /// Memories subsystem settings.
     pub memories: MemoriesConfig,
+
+    /// Thin app-server seam for additive external context injection.
+    pub external_context: ExternalContextConfig,
 
     /// Directory containing all Codex state (defaults to `~/.codex` but can be
     /// overridden by the `CODEX_HOME` environment variable).
@@ -2179,6 +2183,7 @@ impl Config {
             agent_max_depth,
             agent_roles,
             memories: cfg.memories.unwrap_or_default().into(),
+            external_context: cfg.external_context.unwrap_or_default().into(),
             agent_job_max_runtime_seconds,
             codex_home,
             sqlite_home,

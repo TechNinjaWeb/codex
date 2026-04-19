@@ -67,6 +67,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use tempfile::TempDir;
 use tokio::time::timeout;
+use wiremock::Mock;
+use wiremock::MockServer;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
 
 use super::analytics::enable_analytics_capture;
 use super::analytics::mount_analytics_capture;
@@ -242,6 +247,175 @@ async fn turn_start_emits_user_message_item_with_text_elements() -> Result<()> {
         mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_injects_external_context_before_user_prompt() -> Result<()> {
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+    let context_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/context"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "additional_contexts": [
+                "Repo packet: preserve the OB1 thought contract."
+            ]
+        })))
+        .mount(&context_server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_external_context(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::from([(Feature::Personality, true)]),
+        "read-only",
+        &format!("{}/context", context_server.uri()),
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "Hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let context_requests = context_server
+        .received_requests()
+        .await
+        .expect("failed to fetch external context requests");
+    assert_eq!(context_requests.len(), 1);
+    assert!(body_contains(&context_requests[0], "\"thread_id\""));
+    assert!(body_contains(&context_requests[0], &thread.id));
+    assert!(body_contains(&context_requests[0], "Hello"));
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("failed to fetch received requests");
+    assert_eq!(requests.len(), 1);
+    let request_body: serde_json::Value = serde_json::from_slice(&requests[0].body)?;
+    let input = request_body["input"]
+        .as_array()
+        .cloned()
+        .expect("responses input array");
+    let injected_index =
+        response_item_text_position(&input, "Repo packet: preserve the OB1 thought contract.")
+            .expect("external context should be included in model input");
+    let user_prompt_index =
+        response_item_text_position(&input, "Hello").expect("user prompt should be included");
+    assert!(injected_index < user_prompt_index);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_continues_when_external_context_provider_fails() -> Result<()> {
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+    let context_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/context"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&context_server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_external_context(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::from([(Feature::Personality, true)]),
+        "read-only",
+        &format!("{}/context", context_server.uri()),
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "Hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("failed to fetch received requests");
+    assert_eq!(requests.len(), 1);
+    let request_body: serde_json::Value = serde_json::from_slice(&requests[0].body)?;
+    let input = request_body["input"]
+        .as_array()
+        .cloned()
+        .expect("responses input array");
+    assert!(
+        response_item_text_position(&input, "Repo packet: preserve the OB1 thought contract.")
+            .is_none(),
+        "failed external context provider should not inject stale developer context"
+    );
+    assert!(response_item_text_position(&input, "Hello").is_some());
 
     Ok(())
 }
@@ -2969,6 +3143,24 @@ fn create_config_toml_with_sandbox(
     feature_flags: &BTreeMap<Feature, bool>,
     sandbox_mode: &str,
 ) -> std::io::Result<()> {
+    create_config_toml_with_external_context(
+        codex_home,
+        server_uri,
+        approval_policy,
+        feature_flags,
+        sandbox_mode,
+        "",
+    )
+}
+
+fn create_config_toml_with_external_context(
+    codex_home: &Path,
+    server_uri: &str,
+    approval_policy: &str,
+    feature_flags: &BTreeMap<Feature, bool>,
+    sandbox_mode: &str,
+    external_context_url: &str,
+) -> std::io::Result<()> {
     let mut features = BTreeMap::new();
     for (feature, enabled) in feature_flags {
         features.insert(*feature, *enabled);
@@ -2985,6 +3177,16 @@ fn create_config_toml_with_sandbox(
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let external_context_block = if external_context_url.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"
+[external_context]
+url = "{external_context_url}"
+"#
+        )
+    };
     let config_toml = codex_home.join("config.toml");
     std::fs::write(
         config_toml,
@@ -3005,6 +3207,7 @@ base_url = "{server_uri}/v1"
 wire_api = "responses"
 request_max_retries = 0
 stream_max_retries = 0
+{external_context_block}
 "#
         ),
     )
@@ -3017,4 +3220,19 @@ fn write_test_skill(codex_home: &Path, name: &str) -> std::io::Result<()> {
         skill_dir.join("SKILL.md"),
         format!("---\nname: {name}\ndescription: {name} description\n---\n\n# Body\n"),
     )
+}
+
+fn response_item_text_position(items: &[serde_json::Value], needle: &str) -> Option<usize> {
+    items.iter().position(|item| {
+        item.get("content")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|content| {
+                content
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|text| text.contains(needle))
+            })
+    })
 }

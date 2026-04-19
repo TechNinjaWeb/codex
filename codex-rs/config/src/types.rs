@@ -26,6 +26,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
+pub const DEFAULT_EXTERNAL_CONTEXT_TIMEOUT_MS: u64 = 2_000;
 pub const DEFAULT_MEMORIES_MAX_ROLLOUTS_PER_STARTUP: usize = 16;
 pub const DEFAULT_MEMORIES_MAX_ROLLOUT_AGE_DAYS: i64 = 30;
 pub const DEFAULT_MEMORIES_MIN_ROLLOUT_IDLE_HOURS: i64 = 6;
@@ -205,6 +206,67 @@ pub struct MemoriesToml {
     pub extract_model: Option<String>,
     /// Model used for memory consolidation.
     pub consolidation_model: Option<String>,
+}
+
+/// External context adapter settings loaded from config.toml.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ExternalContextToml {
+    /// Optional HTTP endpoint that returns additive context for each turn.
+    pub url: Option<String>,
+    /// Maximum time to wait for the external context provider before proceeding without it.
+    pub timeout_ms: Option<u64>,
+    /// Optional environment variable containing the bearer token used for the provider request.
+    pub bearer_token_env_var: Option<String>,
+}
+
+/// Effective external context adapter settings after defaults are applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalContextConfig {
+    pub url: Option<String>,
+    pub timeout_ms: u64,
+    pub bearer_token_env_var: Option<String>,
+}
+
+impl Default for ExternalContextConfig {
+    fn default() -> Self {
+        Self {
+            url: None,
+            timeout_ms: DEFAULT_EXTERNAL_CONTEXT_TIMEOUT_MS,
+            bearer_token_env_var: None,
+        }
+    }
+}
+
+impl From<ExternalContextToml> for ExternalContextConfig {
+    fn from(toml: ExternalContextToml) -> Self {
+        let defaults = Self::default();
+        let url = toml.url.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+        let bearer_token_env_var = toml.bearer_token_env_var.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+        Self {
+            url,
+            timeout_ms: toml
+                .timeout_ms
+                .unwrap_or(defaults.timeout_ms)
+                .clamp(100, 30_000),
+            bearer_token_env_var,
+        }
+    }
 }
 
 /// Effective memories settings after defaults are applied.

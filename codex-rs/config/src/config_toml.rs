@@ -10,6 +10,7 @@ use crate::types::AnalyticsConfigToml;
 use crate::types::ApprovalsReviewer;
 use crate::types::AppsConfigToml;
 use crate::types::AuthCredentialsStoreMode;
+use crate::types::ExternalContextToml;
 use crate::types::FeedbackConfigToml;
 use crate::types::History;
 use crate::types::MarketplaceConfig;
@@ -318,6 +319,9 @@ pub struct ConfigToml {
 
     /// Memories subsystem settings.
     pub memories: Option<MemoriesToml>,
+
+    /// Sidecar-first external context injection settings.
+    pub external_context: Option<ExternalContextToml>,
 
     /// User-level skill config entries keyed by SKILL.md path.
     pub skills: Option<SkillsConfig>,

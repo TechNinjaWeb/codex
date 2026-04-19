@@ -30,6 +30,8 @@ use codex_config::profile_toml::ConfigProfile;
 use codex_config::types::AppToolApproval;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::BundledSkillsConfig;
+use codex_config::types::ExternalContextConfig;
+use codex_config::types::ExternalContextToml;
 use codex_config::types::FeedbackConfigToml;
 use codex_config::types::HistoryPersistence;
 use codex_config::types::McpServerToolConfig;
@@ -140,6 +142,60 @@ async fn load_config_normalizes_relative_cwd_override() -> std::io::Result<()> {
     .await?;
 
     assert_eq!(config.cwd, expected_cwd);
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_reads_external_context_settings() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            external_context: Some(ExternalContextToml {
+                url: Some(" http://127.0.0.1:8787/context ".to_string()),
+                timeout_ms: Some(4_200),
+                bearer_token_env_var: Some(" OB1_CONTEXT_TOKEN ".to_string()),
+            }),
+            ..ConfigToml::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.external_context.url,
+        Some("http://127.0.0.1:8787/context".to_string())
+    );
+    assert_eq!(config.external_context.timeout_ms, 4_200);
+    assert_eq!(
+        config.external_context.bearer_token_env_var,
+        Some("OB1_CONTEXT_TOKEN".to_string())
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_ignores_blank_external_context_url() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            external_context: Some(ExternalContextToml {
+                url: Some("   ".to_string()),
+                timeout_ms: Some(10),
+                bearer_token_env_var: Some("   ".to_string()),
+            }),
+            ..ConfigToml::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(config.external_context.url, None);
+    assert_eq!(config.external_context.timeout_ms, 100);
+    assert_eq!(config.external_context.bearer_token_env_var, None);
+
     Ok(())
 }
 
@@ -4794,6 +4850,7 @@ async fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             agent_max_depth: DEFAULT_AGENT_MAX_DEPTH,
             agent_roles: BTreeMap::new(),
             memories: MemoriesConfig::default(),
+            external_context: ExternalContextConfig::default(),
             agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
             codex_home: fixture.codex_home(),
             sqlite_home: fixture.codex_home().to_path_buf(),
@@ -4944,6 +5001,7 @@ async fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         agent_max_depth: DEFAULT_AGENT_MAX_DEPTH,
         agent_roles: BTreeMap::new(),
         memories: MemoriesConfig::default(),
+        external_context: ExternalContextConfig::default(),
         agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
         codex_home: fixture.codex_home(),
         sqlite_home: fixture.codex_home().to_path_buf(),
@@ -5092,6 +5150,7 @@ async fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         agent_max_depth: DEFAULT_AGENT_MAX_DEPTH,
         agent_roles: BTreeMap::new(),
         memories: MemoriesConfig::default(),
+        external_context: ExternalContextConfig::default(),
         agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
         codex_home: fixture.codex_home(),
         sqlite_home: fixture.codex_home().to_path_buf(),
@@ -5225,6 +5284,7 @@ async fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         agent_max_depth: DEFAULT_AGENT_MAX_DEPTH,
         agent_roles: BTreeMap::new(),
         memories: MemoriesConfig::default(),
+        external_context: ExternalContextConfig::default(),
         agent_job_max_runtime_seconds: DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS,
         codex_home: fixture.codex_home(),
         sqlite_home: fixture.codex_home().to_path_buf(),
