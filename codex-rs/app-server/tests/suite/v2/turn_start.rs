@@ -66,6 +66,7 @@ use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use serial_test::serial;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
@@ -262,6 +263,7 @@ async fn turn_start_emits_user_message_item_with_text_elements() -> Result<()> {
 }
 
 #[tokio::test]
+#[serial(external_context)]
 async fn turn_start_injects_external_context_before_user_prompt() -> Result<()> {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
@@ -372,6 +374,7 @@ async fn turn_start_injects_external_context_before_user_prompt() -> Result<()> 
 }
 
 #[tokio::test]
+#[serial(external_context)]
 async fn turn_start_continues_when_external_context_provider_fails() -> Result<()> {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
@@ -450,6 +453,7 @@ async fn turn_start_continues_when_external_context_provider_fails() -> Result<(
 }
 
 #[tokio::test]
+#[serial(external_context)]
 async fn turn_start_reuses_repo_root_external_context_after_thread_resume() -> Result<()> {
     let responses = vec![
         create_final_assistant_message_sse_response("Seeded")?,
@@ -607,6 +611,7 @@ async fn turn_start_reuses_repo_root_external_context_after_thread_resume() -> R
 }
 
 #[tokio::test]
+#[serial(external_context)]
 async fn turn_start_continues_when_external_context_provider_returns_malformed_json() -> Result<()>
 {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
@@ -674,6 +679,7 @@ async fn turn_start_continues_when_external_context_provider_returns_malformed_j
 }
 
 #[tokio::test]
+#[serial(external_context)]
 async fn turn_start_continues_when_external_context_provider_times_out() -> Result<()> {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
@@ -682,7 +688,7 @@ async fn turn_start_continues_when_external_context_provider_times_out() -> Resu
         .and(path("/context"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_delay(std::time::Duration::from_millis(150))
+                .set_delay(std::time::Duration::from_millis(500))
                 .set_body_json(json!({
                     "additional_contexts": [
                         "Repo packet: preserve the OB1 thought contract."
@@ -701,7 +707,7 @@ async fn turn_start_continues_when_external_context_provider_times_out() -> Resu
         "read-only",
         &format!("{}/context", context_server.uri()),
         &ExternalContextConfigOverrides {
-            timeout_ms: Some(25),
+            timeout_ms: Some(100),
             bearer_token_env_var: None,
         },
     )?;
@@ -749,6 +755,7 @@ async fn turn_start_continues_when_external_context_provider_times_out() -> Resu
 }
 
 #[tokio::test]
+#[serial(external_context)]
 async fn turn_start_continues_when_external_context_bearer_token_env_var_is_missing() -> Result<()>
 {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
@@ -819,6 +826,7 @@ async fn turn_start_continues_when_external_context_bearer_token_env_var_is_miss
 }
 
 #[tokio::test]
+#[serial(external_context)]
 async fn turn_start_skips_empty_external_context_entries() -> Result<()> {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
