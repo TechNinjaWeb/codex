@@ -305,7 +305,7 @@ use codex_protocol::dynamic_tools::DynamicToolSpec as CoreDynamicToolSpec;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::TurnItem;
-use codex_protocol::models::DeveloperInstructions;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::ConversationAudioParams;
@@ -6757,7 +6757,13 @@ impl CodexMessageProcessor {
                 Ok(additional_contexts) if !additional_contexts.is_empty() => {
                     let items: Vec<ResponseItem> = additional_contexts
                         .into_iter()
-                        .map(|text| DeveloperInstructions::new(text).into())
+                        .map(|text| ResponseItem::Message {
+                            id: None,
+                            role: "developer".to_string(),
+                            content: vec![ContentItem::InputText { text }],
+                            end_turn: None,
+                            phase: None,
+                        })
                         .collect();
                     if let Err(err) = thread.inject_response_items(items).await {
                         warn!(
