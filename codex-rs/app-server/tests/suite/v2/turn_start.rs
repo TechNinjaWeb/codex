@@ -1,3 +1,4 @@
+use anyhow::Context;
 use anyhow::Result;
 use app_test_support::DEFAULT_CLIENT_NAME;
 use app_test_support::McpProcess;
@@ -38,6 +39,8 @@ use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerRequestResolvedNotification;
 use codex_app_server_protocol::TextElement;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnCompletedNotification;
@@ -83,6 +86,12 @@ const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const TEST_ORIGINATOR: &str = "codex_vscode";
 const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
+
+#[derive(Default)]
+struct ExternalContextConfigOverrides<'a> {
+    timeout_ms: Option<u64>,
+    bearer_token_env_var: Option<&'a str>,
+}
 
 fn body_contains(req: &wiremock::Request, text: &str) -> bool {
     String::from_utf8(req.body.clone())
@@ -152,7 +161,7 @@ async fn turn_start_sends_originator_header() -> Result<()> {
     let requests = server
         .received_requests()
         .await
-        .expect("failed to fetch received requests");
+        .context("failed to fetch received requests")?;
     assert!(!requests.is_empty());
     for request in requests {
         let originator = request
@@ -350,7 +359,7 @@ async fn turn_start_injects_external_context_before_user_prompt() -> Result<()> 
     let input = request_body["input"]
         .as_array()
         .cloned()
-        .expect("responses input array");
+        .context("responses input array")?;
     let injected_index =
         response_item_text_position(&input, "Repo packet: preserve the OB1 thought contract.")
             .expect("external context should be included in model input");
@@ -435,6 +444,440 @@ async fn turn_start_continues_when_external_context_provider_fails() -> Result<(
         "failed external context provider should not inject stale developer context"
     );
     assert!(response_item_text_position(&input, "Hello").is_some());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_reuses_repo_root_external_context_after_thread_resume() -> Result<()> {
+    let responses = vec![
+        create_final_assistant_message_sse_response("Seeded")?,
+        create_final_assistant_message_sse_response("Resumed")?,
+    ];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+    let context_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/context"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "additional_contexts": [
+                "Repo packet: preserve the OB1 thought contract."
+            ]
+        })))
+        .mount(&context_server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_external_context(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::from([(Feature::Personality, true)]),
+        "read-only",
+        &format!("{}/context", context_server.uri()),
+    )?;
+
+    let repo_root = TempDir::new()?;
+    std::fs::create_dir(repo_root.path().join(".git"))?;
+    let nested = repo_root.path().join("nested/project");
+    std::fs::create_dir_all(&nested)?;
+
+    let mut first_mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, first_mcp.initialize()).await??;
+
+    let thread_req = first_mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            cwd: Some(nested.display().to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        first_mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let seed_turn_req = first_mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "Seed history".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        first_mcp.read_stream_until_response_message(RequestId::Integer(seed_turn_req)),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        first_mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+    drop(first_mcp);
+
+    let mut resumed_mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, resumed_mcp.initialize()).await??;
+
+    let resume_req = resumed_mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread.id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        resumed_mcp.read_stream_until_response_message(RequestId::Integer(resume_req)),
+    )
+    .await??;
+    let ThreadResumeResponse {
+        thread: resumed_thread,
+        ..
+    } = to_response::<ThreadResumeResponse>(resume_resp)?;
+    assert_eq!(resumed_thread.id, thread.id);
+
+    let resumed_turn_req = resumed_mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: resumed_thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "Follow up".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        resumed_mcp.read_stream_until_response_message(RequestId::Integer(resumed_turn_req)),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        resumed_mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let context_requests = context_server
+        .received_requests()
+        .await
+        .expect("failed to fetch external context requests");
+    assert_eq!(context_requests.len(), 2);
+    let resumed_context_request: serde_json::Value =
+        serde_json::from_slice(&context_requests[1].body)?;
+    assert_eq!(resumed_context_request["thread_id"], json!(thread.id));
+    assert_eq!(
+        resumed_context_request["cwd"],
+        json!(nested.display().to_string())
+    );
+    assert_eq!(
+        resumed_context_request["repo_root"],
+        json!(repo_root.path().display().to_string())
+    );
+    assert!(
+        resumed_context_request["input"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| item.to_string().contains("Follow up")))
+    );
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("failed to fetch received requests");
+    assert_eq!(requests.len(), 2);
+    let resumed_request_body: serde_json::Value = serde_json::from_slice(&requests[1].body)?;
+    let input = resumed_request_body["input"]
+        .as_array()
+        .cloned()
+        .expect("responses input array");
+    let injected_index =
+        response_item_text_position(&input, "Repo packet: preserve the OB1 thought contract.")
+            .expect("external context should be included in resumed turn input");
+    let user_prompt_index =
+        response_item_text_position(&input, "Follow up").expect("user prompt should be included");
+    assert!(injected_index < user_prompt_index);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_continues_when_external_context_provider_returns_malformed_json() -> Result<()>
+{
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+    let context_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/context"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw("{\"additional_contexts\":[", "application/json"),
+        )
+        .mount(&context_server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_external_context(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::from([(Feature::Personality, true)]),
+        "read-only",
+        &format!("{}/context", context_server.uri()),
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "Hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    assert_model_input_omits_external_context(&server, "Hello").await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_continues_when_external_context_provider_times_out() -> Result<()> {
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+    let context_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/context"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(150))
+                .set_body_json(json!({
+                    "additional_contexts": [
+                        "Repo packet: preserve the OB1 thought contract."
+                    ]
+                })),
+        )
+        .mount(&context_server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_external_context_options(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::from([(Feature::Personality, true)]),
+        "read-only",
+        &format!("{}/context", context_server.uri()),
+        &ExternalContextConfigOverrides {
+            timeout_ms: Some(25),
+            bearer_token_env_var: None,
+        },
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "Hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    assert_model_input_omits_external_context(&server, "Hello").await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_continues_when_external_context_bearer_token_env_var_is_missing() -> Result<()>
+{
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+    let context_server = MockServer::start().await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_external_context_options(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::from([(Feature::Personality, true)]),
+        "read-only",
+        &format!("{}/context", context_server.uri()),
+        &ExternalContextConfigOverrides {
+            timeout_ms: None,
+            bearer_token_env_var: Some("CODEX_EXTERNAL_CONTEXT_TOKEN"),
+        },
+    )?;
+
+    let mut mcp =
+        McpProcess::new_with_env(codex_home.path(), &[("CODEX_EXTERNAL_CONTEXT_TOKEN", None)])
+            .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "Hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let context_requests = context_server
+        .received_requests()
+        .await
+        .expect("failed to fetch external context requests");
+    assert_eq!(context_requests.len(), 0);
+    assert_model_input_omits_external_context(&server, "Hello").await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_skips_empty_external_context_entries() -> Result<()> {
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+    let context_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/context"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "additional_contexts": ["   ", ""]
+        })))
+        .mount(&context_server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_external_context(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::from([(Feature::Personality, true)]),
+        "read-only",
+        &format!("{}/context", context_server.uri()),
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "Hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    assert_model_input_omits_external_context(&server, "Hello").await?;
 
     Ok(())
 }
@@ -3180,6 +3623,26 @@ fn create_config_toml_with_external_context(
     sandbox_mode: &str,
     external_context_url: &str,
 ) -> std::io::Result<()> {
+    create_config_toml_with_external_context_options(
+        codex_home,
+        server_uri,
+        approval_policy,
+        feature_flags,
+        sandbox_mode,
+        external_context_url,
+        &ExternalContextConfigOverrides::default(),
+    )
+}
+
+fn create_config_toml_with_external_context_options(
+    codex_home: &Path,
+    server_uri: &str,
+    approval_policy: &str,
+    feature_flags: &BTreeMap<Feature, bool>,
+    sandbox_mode: &str,
+    external_context_url: &str,
+    external_context_overrides: &ExternalContextConfigOverrides<'_>,
+) -> std::io::Result<()> {
     let mut features = BTreeMap::new();
     for (feature, enabled) in feature_flags {
         features.insert(*feature, *enabled);
@@ -3199,10 +3662,19 @@ fn create_config_toml_with_external_context(
     let external_context_block = if external_context_url.is_empty() {
         String::new()
     } else {
+        let timeout_line = external_context_overrides
+            .timeout_ms
+            .map(|timeout_ms| format!("timeout_ms = {timeout_ms}\n"))
+            .unwrap_or_default();
+        let bearer_token_line = external_context_overrides
+            .bearer_token_env_var
+            .map(|env_var| format!("bearer_token_env_var = \"{env_var}\"\n"))
+            .unwrap_or_default();
         format!(
             r#"
 [external_context]
 url = "{external_context_url}"
+{timeout_line}{bearer_token_line}
 "#
         )
     };
@@ -3254,4 +3726,31 @@ fn response_item_text_position(items: &[serde_json::Value], needle: &str) -> Opt
                     .is_some_and(|text| text.contains(needle))
             })
     })
+}
+
+async fn assert_model_input_omits_external_context(
+    server: &MockServer,
+    expected_user_text: &str,
+) -> Result<()> {
+    let requests = server
+        .received_requests()
+        .await
+        .expect("failed to fetch received requests");
+    assert_eq!(requests.len(), 1);
+    let request_body: serde_json::Value = serde_json::from_slice(&requests[0].body)?;
+    let input = request_body["input"]
+        .as_array()
+        .cloned()
+        .expect("responses input array");
+    assert!(
+        response_item_text_position(&input, "Repo packet: preserve the OB1 thought contract.")
+            .is_none(),
+        "failed or empty external context should not inject developer context"
+    );
+    assert!(
+        response_item_text_position(&input, expected_user_text).is_some(),
+        "user prompt should remain present in model input"
+    );
+
+    Ok(())
 }
