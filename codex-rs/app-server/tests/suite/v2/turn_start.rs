@@ -276,12 +276,18 @@ async fn turn_start_injects_external_context_before_user_prompt() -> Result<()> 
         &format!("{}/context", context_server.uri()),
     )?;
 
+    let repo_root = TempDir::new()?;
+    std::fs::create_dir(repo_root.path().join(".git"))?;
+    let nested = repo_root.path().join("nested/project");
+    std::fs::create_dir_all(&nested)?;
+
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let thread_req = mcp
         .send_thread_start_request(ThreadStartParams {
             model: Some("mock-model".to_string()),
+            cwd: Some(nested.display().to_string()),
             ..Default::default()
         })
         .await?;
@@ -318,9 +324,22 @@ async fn turn_start_injects_external_context_before_user_prompt() -> Result<()> 
         .await
         .expect("failed to fetch external context requests");
     assert_eq!(context_requests.len(), 1);
-    assert!(body_contains(&context_requests[0], "\"thread_id\""));
-    assert!(body_contains(&context_requests[0], &thread.id));
-    assert!(body_contains(&context_requests[0], "Hello"));
+    let context_request_body: serde_json::Value =
+        serde_json::from_slice(&context_requests[0].body)?;
+    assert_eq!(context_request_body["thread_id"], json!(thread.id));
+    assert_eq!(
+        context_request_body["cwd"],
+        json!(nested.display().to_string())
+    );
+    assert_eq!(
+        context_request_body["repo_root"],
+        json!(repo_root.path().display().to_string())
+    );
+    assert!(
+        context_request_body["input"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item.to_string().contains("Hello")))
+    );
 
     let requests = server
         .received_requests()

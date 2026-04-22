@@ -2,6 +2,7 @@ use anyhow::Context;
 use codex_app_server_protocol::UserInput;
 use codex_config::types::ExternalContextConfig;
 use codex_core::ThreadConfigSnapshot;
+use codex_git_utils::get_git_repo_root;
 use codex_login::default_client::build_reqwest_client;
 use serde::Deserialize;
 use serde::Serialize;
@@ -12,6 +13,8 @@ struct ExternalContextRequest<'a> {
     thread_id: &'a str,
     model: &'a str,
     cwd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo_root: Option<String>,
     input: &'a [UserInput],
 }
 
@@ -38,6 +41,8 @@ pub(crate) async fn fetch_turn_start_context(
             thread_id,
             model: &config_snapshot.model,
             cwd: config_snapshot.cwd.display().to_string(),
+            repo_root: get_git_repo_root(config_snapshot.cwd.as_path())
+                .map(|path| path.display().to_string()),
             input,
         });
 
