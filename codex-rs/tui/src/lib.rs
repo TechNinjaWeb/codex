@@ -27,6 +27,7 @@ use codex_app_server_protocol::Account as AppServerAccount;
 use codex_app_server_protocol::AuthMode as AppServerAuthMode;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::Thread as AppServerThread;
+use codex_app_server_protocol::ThreadListCwdFilter;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadSortKey as AppServerThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
@@ -124,6 +125,7 @@ mod external_editor;
 mod file_search;
 mod frames;
 mod get_git_diff;
+mod goal_display;
 mod history_cell;
 pub(crate) mod insert_history;
 pub use insert_history::insert_history_lines;
@@ -140,11 +142,14 @@ mod model_catalog;
 mod model_migration;
 mod multi_agents;
 mod notifications;
+#[cfg(any(not(debug_assertions), test))]
+mod npm_registry;
 pub(crate) mod onboarding;
 mod oss_selection;
 mod pager_overlay;
 pub(crate) mod public_widgets;
 mod render;
+mod resize_reflow_cap;
 mod resume_picker;
 mod selection_list;
 mod session_log;
@@ -160,15 +165,19 @@ mod terminal_title;
 mod text_formatting;
 mod theme_picker;
 mod tooltips;
+mod transcript_reflow;
 mod tui;
 mod ui_consts;
 pub(crate) mod update_action;
 pub use update_action::UpdateAction;
 mod update_prompt;
+#[cfg(any(not(debug_assertions), test))]
+mod update_versions;
 mod updates;
 mod version;
 #[cfg(not(target_os = "linux"))]
 mod voice;
+mod width;
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 mod voice {
@@ -523,6 +532,7 @@ async fn lookup_session_target_by_name_with_app_server(
                 source_kinds: Some(vec![ThreadSourceKind::Cli, ThreadSourceKind::VsCode]),
                 archived: Some(false),
                 cwd: None,
+                use_state_db_only: false,
                 search_term: Some(name.to_string()),
             })
             .await?;
@@ -614,7 +624,8 @@ fn latest_session_lookup_params(
         source_kinds: (!include_non_interactive)
             .then_some(vec![ThreadSourceKind::Cli, ThreadSourceKind::VsCode]),
         archived: Some(false),
-        cwd: cwd_filter.map(|cwd| cwd.to_string_lossy().to_string()),
+        cwd: cwd_filter.map(|cwd| ThreadListCwdFilter::One(cwd.to_string_lossy().to_string())),
+        use_state_db_only: false,
         search_term: None,
     }
 }
@@ -1666,6 +1677,7 @@ async fn get_login_status(
     Ok(match account.account {
         Some(AppServerAccount::ApiKey {}) => LoginStatus::AuthMode(AppServerAuthMode::ApiKey),
         Some(AppServerAccount::Chatgpt { .. }) => LoginStatus::AuthMode(AppServerAuthMode::Chatgpt),
+        Some(AppServerAccount::AmazonBedrock {}) => LoginStatus::NotAuthenticated,
         None => LoginStatus::NotAuthenticated,
     })
 }
@@ -1883,7 +1895,10 @@ mod tests {
         );
 
         assert_eq!(params.model_providers, Some(vec![config.model_provider_id]));
-        assert_eq!(params.cwd, Some(cwd.to_string_lossy().to_string()));
+        assert_eq!(
+            params.cwd,
+            Some(ThreadListCwdFilter::One(cwd.to_string_lossy().to_string()))
+        );
         Ok(())
     }
 
@@ -1918,7 +1933,10 @@ mod tests {
         );
 
         assert_eq!(params.model_providers, None);
-        assert_eq!(params.cwd.as_deref(), Some("repo/on/server"));
+        assert_eq!(
+            params.cwd,
+            Some(ThreadListCwdFilter::One(String::from("repo/on/server")))
+        );
         Ok(())
     }
 
@@ -2188,6 +2206,7 @@ mod tests {
             timezone: None,
             approval_policy: config.permissions.approval_policy.value(),
             sandbox_policy: config.permissions.sandbox_policy.get().clone(),
+            permission_profile: None,
             network: None,
             file_system_sandbox_policy: None,
             model,

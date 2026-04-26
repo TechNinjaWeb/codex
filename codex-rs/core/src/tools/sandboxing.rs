@@ -135,8 +135,25 @@ pub(crate) struct ApprovalCtx<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PermissionRequestPayload {
     pub tool_name: HookToolName,
-    pub command: String,
-    pub description: Option<String>,
+    pub tool_input: serde_json::Value,
+}
+
+impl PermissionRequestPayload {
+    pub(crate) fn bash(command: String, description: Option<String>) -> Self {
+        let mut tool_input = serde_json::Map::new();
+        tool_input.insert("command".to_string(), serde_json::Value::String(command));
+        if let Some(description) = description {
+            tool_input.insert(
+                "description".to_string(),
+                serde_json::Value::String(description),
+            );
+        }
+
+        Self {
+            tool_name: HookToolName::bash(),
+            tool_input: serde_json::Value::Object(tool_input),
+        }
+    }
 }
 
 // Specifies what tool orchestrator should do with a given tool call.
@@ -245,6 +262,17 @@ pub(crate) fn sandbox_override_for_first_attempt(
         SandboxOverride::BypassSandboxFirstAttempt
     } else {
         SandboxOverride::NoOverride
+    }
+}
+
+pub(crate) fn managed_network_for_sandbox_permissions(
+    network: Option<&NetworkProxy>,
+    sandbox_permissions: SandboxPermissions,
+) -> Option<&NetworkProxy> {
+    if sandbox_permissions.requires_escalated_permissions() {
+        None
+    } else {
+        network
     }
 }
 
