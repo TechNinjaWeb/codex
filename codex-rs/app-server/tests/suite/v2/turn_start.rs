@@ -282,8 +282,39 @@ async fn turn_start_injects_external_context_before_user_prompt() -> Result<()> 
         .and(path("/context"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "additional_contexts": [
-                "Repo packet: preserve the OB1 thought contract."
-            ]
+                concat!(
+                    "Open Brain retrieved context for thread test-thread.\n",
+                    "Use this as additive retrieved context with explicit provenance.\n\n",
+                    "Continuation state:\n\n",
+                    "Completed work:\n",
+                    "1. Repo packet: preserve the OB1 thought contract. Sources: node:node-complete.\n\n",
+                    "Next safe action:\n",
+                    "1. Continue operator integration audit. Sources: node:node-action."
+                )
+            ],
+            "continuation_state": {
+                "continuation_state_version": "continuation_state_v1",
+                "section_count": 2,
+                "source_ref_count": 2,
+                "sections": [
+                    {
+                        "key": "completed_work",
+                        "title": "Completed work",
+                        "entries": [{
+                            "text": "Repo packet: preserve the OB1 thought contract.",
+                            "source_refs": ["node:node-complete"]
+                        }]
+                    },
+                    {
+                        "key": "next_safe_action",
+                        "title": "Next safe action",
+                        "entries": [{
+                            "text": "Continue operator integration audit.",
+                            "source_refs": ["node:node-action"]
+                        }]
+                    }
+                ]
+            }
         })))
         .mount(&context_server)
         .await;
@@ -376,6 +407,14 @@ async fn turn_start_injects_external_context_before_user_prompt() -> Result<()> 
     let injected_index =
         response_item_text_position(&input, "Repo packet: preserve the OB1 thought contract.")
             .expect("external context should be included in model input");
+    assert!(
+        response_item_text_position(&input, "Continuation state:").is_some(),
+        "continuation context heading should be preserved in model input"
+    );
+    assert!(
+        response_item_text_position(&input, "Completed work:").is_some(),
+        "continuation section heading should be preserved in model input"
+    );
     let user_prompt_index =
         response_item_text_position(&input, "Hello").expect("user prompt should be included");
     assert!(injected_index < user_prompt_index);
