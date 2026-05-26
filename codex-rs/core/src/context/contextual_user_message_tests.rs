@@ -1,8 +1,11 @@
 use super::*;
 use crate::context::ContextualUserFragment;
+use crate::context::GoalContext;
+use crate::context::SubagentNotification;
 use codex_protocol::items::HookPromptFragment;
 use codex_protocol::items::build_hook_prompt_message;
 use codex_protocol::models::ResponseItem;
+use pretty_assertions::assert_eq;
 
 #[test]
 fn detects_environment_context_fragment() {
@@ -27,42 +30,31 @@ fn detects_subagent_notification_fragment_case_insensitively() {
 }
 
 #[test]
-fn ignores_regular_user_text() {
-    assert!(!is_contextual_user_fragment(&ContentItem::InputText {
-        text: "hello".to_string(),
+fn detects_goal_context_fragment() {
+    let text = GoalContext::new("Continue working toward the active thread goal.").render();
+
+    assert!(is_contextual_user_fragment(&ContentItem::InputText {
+        text
     }));
 }
 
 #[test]
-fn classifies_memory_excluded_fragments() {
-    let cases = [
-        (
-            "# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\nbody\n</INSTRUCTIONS>",
-            true,
-        ),
-        (
-            "<skill>\n<name>demo</name>\n<path>skills/demo/SKILL.md</path>\nbody\n</skill>",
-            true,
-        ),
-        (
-            "<environment_context>\n<cwd>/tmp</cwd>\n</environment_context>",
-            false,
-        ),
-        (
-            "<subagent_notification>{\"agent_id\":\"a\",\"status\":\"completed\"}</subagent_notification>",
-            false,
-        ),
-    ];
+fn contextual_user_fragment_is_dyn_compatible() {
+    let fragment: Box<dyn ContextualUserFragment> = Box::new(GoalContext::new(
+        "Continue working toward the active thread goal.",
+    ));
 
-    for (text, expected) in cases {
-        assert_eq!(
-            is_memory_excluded_contextual_user_fragment(&ContentItem::InputText {
-                text: text.to_string(),
-            }),
-            expected,
-            "{text}",
-        );
-    }
+    assert_eq!(
+        fragment.render(),
+        "<goal_context>\nContinue working toward the active thread goal.\n</goal_context>"
+    );
+}
+
+#[test]
+fn ignores_regular_user_text() {
+    assert!(!is_contextual_user_fragment(&ContentItem::InputText {
+        text: "hello".to_string(),
+    }));
 }
 
 #[test]

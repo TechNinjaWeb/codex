@@ -70,6 +70,7 @@ impl TestToolServer {
             Self::echo_dash_tool(),
             Self::cwd_tool(),
             Self::sync_tool(),
+            Self::sync_readonly_tool(),
             Self::image_tool(),
             Self::image_scenario_tool(),
             sandbox_meta_tool,
@@ -205,6 +206,12 @@ impl TestToolServer {
         }))
         .expect("sync tool output schema should deserialize");
         tool.output_schema = Some(Arc::new(output_schema));
+        tool
+    }
+
+    fn sync_readonly_tool() -> Tool {
+        let mut tool = Self::sync_tool();
+        tool.name = Cow::Borrowed("sync_readonly");
         tool.annotations = Some(ToolAnnotations::new().read_only(true));
         tool
     }
@@ -401,6 +408,7 @@ impl ServerHandler for TestToolServer {
         )]));
 
         ServerInfo {
+            instructions: Some("Use these tools to exercise the rmcp test server.".to_string()),
             capabilities,
             ..ServerInfo::default()
         }
@@ -548,6 +556,10 @@ impl ServerHandler for TestToolServer {
             }
             "sync" => {
                 let args = Self::parse_call_args::<SyncArgs>(&request, "sync")?;
+                Self::sync_result(args).await
+            }
+            "sync_readonly" => {
+                let args = Self::parse_call_args::<SyncArgs>(&request, "sync_readonly")?;
                 Self::sync_result(args).await
             }
             other => Err(McpError::invalid_params(
@@ -755,6 +767,9 @@ fn parse_data_url(url: &str) -> Option<(String, String)> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("starting rmcp test server");
+    if let Ok(pid_file) = std::env::var("MCP_TEST_PID_FILE") {
+        std::fs::write(pid_file, std::process::id().to_string())?;
+    }
     // Run the server with STDIO transport. If the client disconnects we simply
     // bubble up the error so the process exits.
     let service = TestToolServer::new();

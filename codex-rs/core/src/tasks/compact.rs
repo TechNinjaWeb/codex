@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use super::SessionTask;
 use super::SessionTaskContext;
+use crate::session::TurnInput;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
 use codex_protocol::user_input::UserInput;
@@ -23,7 +24,7 @@ impl SessionTask for CompactTask {
         self: Arc<Self>,
         session: Arc<SessionTaskContext>,
         ctx: Arc<TurnContext>,
-        input: Vec<UserInput>,
+        _input: Vec<TurnInput>,
         _cancellation_token: CancellationToken,
     ) -> Option<String> {
         let session = session.clone_session();
@@ -33,13 +34,25 @@ impl SessionTask for CompactTask {
                 /*inc*/ 1,
                 &[("type", "remote")],
             );
-            crate::compact_remote::run_remote_compact_task(session.clone(), ctx).await
+            if ctx
+                .features
+                .enabled(codex_features::Feature::RemoteCompactionV2)
+            {
+                crate::compact_remote_v2::run_remote_compact_task(session.clone(), ctx).await
+            } else {
+                crate::compact_remote::run_remote_compact_task(session.clone(), ctx).await
+            }
         } else {
             session.services.session_telemetry.counter(
                 "codex.task.compact",
                 /*inc*/ 1,
                 &[("type", "local")],
             );
+            let input = vec![UserInput::Text {
+                text: ctx.compact_prompt().to_string(),
+                // Compaction prompt is synthesized; no UI element ranges to preserve.
+                text_elements: Vec::new(),
+            }];
             crate::compact::run_compact_task(session.clone(), ctx, input).await
         };
         None
