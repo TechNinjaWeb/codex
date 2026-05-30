@@ -630,6 +630,97 @@ async fn turn_start_injects_external_context_before_user_prompt() -> Result<()> 
 
 #[tokio::test]
 #[serial(external_context)]
+async fn turn_start_external_context_uses_turn_cwd_override() -> Result<()> {
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+    let context_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/context"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "additional_contexts": ["Repo packet for overridden cwd."]
+        })))
+        .mount(&context_server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_external_context(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::from([(Feature::Personality, true)]),
+        "read-only",
+        &format!("{}/context", context_server.uri()),
+    )?;
+
+    let first_repo_root = TempDir::new()?;
+    std::fs::create_dir(first_repo_root.path().join(".git"))?;
+    let first_nested = first_repo_root.path().join("nested/project");
+    std::fs::create_dir_all(&first_nested)?;
+    let second_repo_root = TempDir::new()?;
+    std::fs::create_dir(second_repo_root.path().join(".git"))?;
+    let second_nested = second_repo_root.path().join("nested/project");
+    std::fs::create_dir_all(&second_nested)?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            cwd: Some(first_nested.display().to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "Hello from another repo".to_string(),
+                text_elements: Vec::new(),
+            }],
+            cwd: Some(second_nested.clone()),
+            ..Default::default()
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let context_requests = context_server
+        .received_requests()
+        .await
+        .expect("failed to fetch external context requests");
+    assert_eq!(context_requests.len(), 1);
+    let context_request_body: serde_json::Value =
+        serde_json::from_slice(&context_requests[0].body)?;
+    assert_eq!(
+        context_request_body["cwd"],
+        json!(second_nested.display().to_string())
+    );
+    assert_eq!(
+        context_request_body["repo_root"],
+        json!(second_repo_root.path().display().to_string())
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(external_context)]
 async fn turn_start_continues_when_external_context_provider_fails() -> Result<()> {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
     let server = create_mock_responses_server_sequence_unchecked(responses).await;

@@ -30,6 +30,21 @@ fn resolve_runtime_workspace_roots(
     resolved_roots
 }
 
+async fn external_context_config_snapshot(
+    thread: &CodexThread,
+    thread_settings: &codex_protocol::protocol::ThreadSettingsOverrides,
+) -> ThreadConfigSnapshot {
+    let mut config_snapshot = thread.config_snapshot().await;
+    if let Some(cwd) = thread_settings.cwd.as_ref() {
+        config_snapshot.cwd =
+            AbsolutePathBuf::resolve_path_against_base(cwd, config_snapshot.cwd.as_path());
+    }
+    if let Some(model) = thread_settings.model.as_ref() {
+        config_snapshot.model.clone_from(model);
+    }
+    config_snapshot
+}
+
 struct ThreadSettingsBuildParams {
     method: &'static str,
     cwd: Option<PathBuf>,
@@ -415,7 +430,8 @@ impl TurnRequestProcessor {
             .await?;
 
         if self.config.external_context.url.is_some() {
-            let config_snapshot = thread.config_snapshot().await;
+            let config_snapshot =
+                external_context_config_snapshot(thread.as_ref(), &thread_settings).await;
             match fetch_turn_start_context(
                 &self.config.external_context,
                 &params.thread_id,
